@@ -99,11 +99,12 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
         # pop client_audio and save to client_speech, which LLM
         # will use
         if silence_audio.shape[0] >= SILENCE_SAMPLES:
+            
             silence_found=True
             # TEMPORARY: saving the speech into outputSpeech.wav
             speech_unsq = torch.unsqueeze(speech_audio, dim=0)
             torchaudio.save("outputSpeech_"+client_id+".wav", speech_unsq, SAMPLE_RATE)
-            print(f"Speech data saved at outputSpeech_{client_id}.wav")
+            print(f"Speech data saved at outputSpeech_{client_id}.wav and client_audio is", client_audio[client_id].shape[0], )
 
             # Save the speech into a temporary file
             # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
@@ -114,9 +115,12 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
 
             # pop from client_audio and save into client_speech
             speech = client_audio[client_id]
+
             client_audio[client_id] = np.empty(0)
+
             client_speech[client_id] = speech
-    
+            print(f"client_audio after popping is {client_audio[client_id]} and size = {client_audio[client_id].shape[0]}")
+
     # Adaptive thresholding which should allow for silence at the beginning
     # of audio and adapt to differing confidence levels of the VAD model.
     # Equation acquired from link:
@@ -264,7 +268,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         INTERRUPT_THRESHOLD = 0.8
 
         print("sending audio back with length (samples)", client_speech[client_id].shape[0])
-
+        print("client_audio = ", client_audio[client_id].shape[0])
         # here is where we need to send client_speech to client
 
         # this is for incoming audio after the silence is found, it progressively checks client_audio for interrupts
@@ -277,7 +281,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 if interrupt_prob >= INTERRUPT_THRESHOLD:
                     # pass
                     print('streaming silence to client')
-                    audio_sender.replaceTrack(MediaPlayer(AudioStreamTrack()).audio)
+                    audio_sender.replaceTrack(MediaPlayer(AudioStreamTrack()))
                     client_info[client_id]['silence_found'] = False
                     break
                     # change track to silence
