@@ -130,6 +130,8 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
     client_info[client_id] = {'speech_audio':speech_audio, 'silence_audio':silence_audio, 'speech_threshold':speech_threshold, 'prob_data': prob_data, 'silence_found':silence_found, 'replaceTrack':False}
 
 
+    # audio_sender._track_id and track._MediaStreamTrack__ended
+
 # Create a child class to MediaRecorder class to record audio data to a buffer
 class BufferMediaRecorder(MediaRecorder):
     """
@@ -241,7 +243,11 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
                         # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
                         if not client_info[client_id]['replaceTrack']:
-                            audio_sender.replaceTrack(MediaPlayer('outputSpeech_'+client_id+'.wav').audio)
+
+                            player=MediaPlayer('outputSpeech_'+client_id+'.wav') # Create a MediaPlayer object
+                            track=player.audio # add track to player
+                            audio_sender.replaceTrack(track)
+
                             client_info[client_id]['replaceTrack'] = True
                             print("Replaced the track with saved audio for the client")
 
