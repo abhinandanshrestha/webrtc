@@ -62,7 +62,7 @@ async def run(client_id):
     }
 
     try:
-        response = requests.post("http://localhost:8000/offer", data=sdp_offer)
+        response = requests.post("http://localhost:8080/offer", data=sdp_offer)
         # print(response)
         if response.status_code == 200:
             answer = response.json()
@@ -86,4 +86,3 @@ if __name__ == "__main__":
         sys.exit(1)
     client_id = sys.argv[1]
     asyncio.run(run(client_id))
-

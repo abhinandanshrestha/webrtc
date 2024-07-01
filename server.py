@@ -13,6 +13,7 @@ import torch
 import torchaudio
 import shutil
 import tempfile
+import uuid
 # import logging
 
 app = FastAPI() # Initialize the FastAPI 
@@ -25,7 +26,7 @@ client_datachannels={} # {'c1': channelC1, 'c2':channelC2, ...} client - datacha
 client_audio = {} # {'c1':[[]], 'c2': [[]], ...} client - np.array mapping dictionary for all of client's audio as one np.array, popped when VAD detects silence
 client_speech = {} # {'c1':[[]], 'c2': [[]], ...} client - np.array mapping dictionary for output speech from VAD
 
-client_info = {} # {'c1' : {'speech_tensor':'torch.tensor', 'silence_tensor':'torch.tensor', 'speech_threshold':float 'prob_data': []}} 
+client_info = {} # {'c1' : {'speech_tensor':'torch.tensor', 'silence_tensor':'torch.tensor', 'speech_threshold':float 'prob_data': [], 'silence_found':bool}} 
 # client - dictionary mappign dictionary that stores data for the VAD logic, such as the PyTorch tensors for speech and silence, the adaptive thresholding value,
 # and the list of the probabilities for use in the adaptive thresholding logic
 
@@ -41,7 +42,7 @@ model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
 # Edit as appropriate for the input stream.
 SAMPLE_RATE = 16000
 ORIG_SAMPLE = 48000
-SILENCE_TIME = 2 # 2 seconds
+SILENCE_TIME = 2 # seconds
 CHUNK_SAMPLES = 512
 CHANNELS = 2
 BIT_DEPTH = 2
@@ -75,7 +76,6 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
     np_chunk = np.frombuffer(chunk, dtype = np.int16)
     np_chunk = np_chunk.astype(np.float32) / 32768.0
     np_chunk = np_chunk.reshape(-1, CHANNELS).mean(axis = 1)
-    print("np_chunk", np_chunk.shape[0])
     chunk_audio = torch.from_numpy(np_chunk)
     chunk_audio = resample(chunk_audio)
 
@@ -87,40 +87,39 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
     speech_prob = model(chunk_audio, SAMPLE_RATE).item()
     prob_data.append(speech_prob)
 
-    if speech_prob >= speech_threshold:
-        # Add chunk to the speech tensor and clear the silence tensor
-        speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
-        silence_audio = torch.empty(0)
-    else:
-        # Add chunk to both silence tensor and speech tensor
-        silence_audio = torch.cat((silence_audio, chunk_audio), dim=0)
-        speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
-        # If the silence is longer than the SILENCE_TIME (2 sec)
-        # pop client_audio and save to client_speech, which LLM
-        # will use
-        if silence_audio.shape[0] >= SILENCE_SAMPLES:
-            
-            silence_found=True
-            # TEMPORARY: saving the speech into outputSpeech.wav
-            speech_unsq = torch.unsqueeze(speech_audio, dim=0)
-            torchaudio.save("outputSpeech_"+client_id+".wav", speech_unsq, SAMPLE_RATE)
-            print(f"Speech data saved at outputSpeech_{client_id}.wav and client_audio is", client_audio[client_id].shape[0], )
+    if not silence_found:
+        if speech_prob >= speech_threshold:
+            # Add chunk to the speech tensor and clear the silence tensor
+            speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
+            silence_audio = torch.empty(0)
+        else:
+            # Add chunk to both silence tensor and speech tensor
+            silence_audio = torch.cat((silence_audio, chunk_audio), dim=0)
+            speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
+            # If the silence is longer than the SILENCE_TIME (2 sec)
+            # pop client_audio and save to client_speech, which LLM
+            # will use
+            if silence_audio.shape[0] >= SILENCE_SAMPLES:
+                silence_found=True
+                # TEMPORARY: saving the speech into outputSpeech.wav
+                speech_unsq = torch.unsqueeze(speech_audio, dim=0)
+                torchaudio.save("outputSpeech_"+client_id+".wav", speech_unsq, SAMPLE_RATE)
+                torchaudio.save("testSpeech_"+client_id+str(uuid.uuid4())+".wav", speech_unsq, SAMPLE_RATE)
+                print(f"Speech data saved at outputSpeech_{client_id}.wav")
 
-            # Save the speech into a temporary file
-            # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
-            #     speech_unsq = torch.unsqueeze(speech_audio, dim=0)
-            #     torchaudio.save(temp_wav.name, speech_unsq, SAMPLE_RATE)
-            #     temp_path = temp_wav.name
-            #     print(f"Speech data saved at {temp_path}")
+                # Save the speech into a temporary file
+                # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
+                #     speech_unsq = torch.unsqueeze(speech_audio, dim=0)
+                #     torchaudio.save(temp_wav.name, speech_unsq, SAMPLE_RATE)
+                #     temp_path = temp_wav.name
+                #     print(f"Speech data saved at {temp_path}")
 
-            # pop from client_audio and save into client_speech
-            speech = client_audio[client_id]
-
-            client_audio[client_id] = np.empty(0)
-
-            client_speech[client_id] = speech
-            print(f"client_audio after popping is {client_audio[client_id]} and size = {client_audio[client_id].shape[0]}")
-
+                # pop from client_audio and save into client_speech
+                speech = client_audio[client_id]
+                client_audio[client_id] = np.empty(0)
+                client_info[client_id]['speech_audio'] = torch.empty(0)
+                client_speech[client_id] = speech
+    
     # Adaptive thresholding which should allow for silence at the beginning
     # of audio and adapt to differing confidence levels of the VAD model.
     # Equation acquired from link:
@@ -231,14 +230,13 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                     chunk = audio_buffer.read(CHUNK_SIZE)
 
                     # Implement VAD in this chunk
-                    if not client_info[client_id]['silence_found']:
-                        asyncio.ensure_future(VAD(chunk, client_id))
+                    asyncio.ensure_future(VAD(chunk, client_id))
+                    # print("audio_buffer", audio_buffer)
                     
-                    # TEMPORARY: testing purposes to see that client_speech is saved with the spoken data
                     if client_info[client_id]['silence_found'] and client_speech[client_id].size:
                         # print(type(client_speech[client_id])
                         # print("VAD detected speech, LLM would read", client_speech[client_id], client_speech[client_id].shape)
-                        print('popped')
+                        # print('popped')
                         await asyncio.sleep(0.001)
 
                         # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
@@ -268,7 +266,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         INTERRUPT_THRESHOLD = 0.8
 
         print("sending audio back with length (samples)", client_speech[client_id].shape[0])
-        print("client_audio = ", client_audio[client_id].shape[0])
+        print("client_audio size", client_audio[client_id].shape[0])
+
         # here is where we need to send client_speech to client
 
         # this is for incoming audio after the silence is found, it progressively checks client_audio for interrupts
@@ -281,7 +280,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 if interrupt_prob >= INTERRUPT_THRESHOLD:
                     # pass
                     print('streaming silence to client')
-                    audio_sender.replaceTrack(MediaPlayer(AudioStreamTrack()))
+                    audio_sender.replaceTrack(AudioStreamTrack())
                     client_info[client_id]['silence_found'] = False
                     break
                     # change track to silence
@@ -376,4 +375,4 @@ def getClients():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="localhost", port=8000) # Increase the number of workers as needed and limit_max_requests
+    uvicorn.run(app, host="localhost", port=8080) # Increase the number of workers as needed and limit_max_requests
