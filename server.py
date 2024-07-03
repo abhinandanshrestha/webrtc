@@ -108,7 +108,10 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
                 torchaudio.save("testSpeech_"+client_id+str(uuid.uuid4())+".wav", speech_unsq, SAMPLE_RATE)
                 print(f"Speech data saved at outputSpeech_{client_id}.wav")
 
-                client_audiosender_buffer[client_id].append("outputSpeech_"+client_id+str(uuid.uuid4())+".wav") # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                if client_id not in client_audiosender_buffer:
+                    client_audiosender_buffer[client_id]=[]
+
+                client_audiosender_buffer[client_id].append("outputSpeech_"+client_id+".wav") # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
                 
                 # Save the speech into a temporary file
                 # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
@@ -192,7 +195,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
             audio_sender=pc.addTrack(AudioStreamTrack())
             # asyncio.ensure_future(recorder.start())
             asyncio.ensure_future(start_recorder(recorder))
-            asyncio.ensure_future(read_buffer_chunks(audio_sender,client_id))
+            asyncio.ensure_future(read_buffer_chunks(client_id))
 
             # Start coroutine to handle interrupts
             # for example: if audio is streaming back to client and client speaks in the middle, replaceTrack(AudioStreamTrack()) with silence
@@ -226,7 +229,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         async with buffer_lock[client_id]:
             await recorder.start()
     
-    async def read_buffer_chunks(audio_sender,client_id):
+    async def read_buffer_chunks(client_id):
         while True:
             await asyncio.sleep(0.01)  # adjust the sleep time based on your requirements
             async with buffer_lock[client_id]:
@@ -251,14 +254,15 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     # This should include if audio_path is available in the client_audiosender_buffer
     # # This should also include if client speaks while streaming, it should interrupt  
     async def send_audio_back(audio_sender, client_id):
+        # print(audio_sender, client_audio)
         # Change interrupt threshold appropriately, likely lower than this, but should be tested
         INTERRUPT_THRESHOLD = 0.8
 
         while True:
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0.1)
 
             # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
-            if client_audiosender_buffer[client_id]:
+            if client_audiosender_buffer and client_audiosender_buffer[client_id]:
                 audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
                 
                 # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
@@ -267,6 +271,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                     client_info[client_id]['streamAudio'] = True
 
                     player=MediaPlayer(audio_path) # Create a MediaPlayer object
+                    print(audio_path)
                     track=player.audio # add track to player
                     audio_sender.replaceTrack(track)
                     
@@ -275,7 +280,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
                     # track._MediaStreamTrack__ended returns True if entire audio has been recorded by the client
                     while not track._MediaStreamTrack__ended:
-                        
+                        await asyncio.sleep(0.1)
+                        # print(track._MediaStreamTrack__ended)
                         # this is for incoming audio when audio is being streamed to client, it progressively checks client_audio for interrupts
                         # if client_info[client_id]['silence_found'] and client_speech[client_id].size:
                         if(client_audio[client_id].shape[0]):
