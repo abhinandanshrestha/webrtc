@@ -31,6 +31,7 @@ client_info = {} # {'c1' : {'speech_tensor':'torch.tensor', 'silence_tensor':'to
 # and the list of the probabilities for use in the adaptive thresholding logic
 
 buffer_lock = {}  # buffer_lock to avoid race condition
+client_audiosender_buffer={} # {'c1':['<path to audio which will be used by audio_sender>'], 'c2':[]}
 
 # loading model for vad
 model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
@@ -107,6 +108,8 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
                 torchaudio.save("testSpeech_"+client_id+str(uuid.uuid4())+".wav", speech_unsq, SAMPLE_RATE)
                 print(f"Speech data saved at outputSpeech_{client_id}.wav")
 
+                client_audiosender_buffer[client_id].append("outputSpeech_"+client_id+str(uuid.uuid4())+".wav") # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                
                 # Save the speech into a temporary file
                 # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
                 #     speech_unsq = torch.unsqueeze(speech_audio, dim=0)
@@ -127,7 +130,7 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
     speech_threshold = threshold_weight * max([i**2 for i in prob_data]) + (1 - threshold_weight) * min([i**2 for i in prob_data])
 
     # Save data back into client_info with updated values
-    client_info[client_id] = {'speech_audio':speech_audio, 'silence_audio':silence_audio, 'speech_threshold':speech_threshold, 'prob_data': prob_data, 'silence_found':silence_found, 'replaceTrack':False}
+    client_info[client_id] = {'speech_audio':speech_audio, 'silence_audio':silence_audio, 'speech_threshold':speech_threshold, 'prob_data': prob_data, 'silence_found':silence_found, 'streamAudio':False}
 
 
     # audio_sender._track_id and track._MediaStreamTrack__ended
@@ -191,7 +194,10 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
             asyncio.ensure_future(start_recorder(recorder))
             asyncio.ensure_future(read_buffer_chunks(audio_sender,client_id))
 
-            
+            # Start coroutine to handle interrupts
+            # for example: if audio is streaming back to client and client speaks in the middle, replaceTrack(AudioStreamTrack()) with silence
+            asyncio.ensure_future(send_audio_back(audio_sender, client_id))
+
             # pc.addTrack(AudioStreamTrack())
             
         @track.on("ended")
@@ -233,32 +239,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
                     # Implement VAD in this chunk
                     asyncio.ensure_future(VAD(chunk, client_id))
-                    # print("audio_buffer", audio_buffer)
-                    
-                    if client_info[client_id]['silence_found'] and client_speech[client_id].size:
-                        # print(type(client_speech[client_id])
-                        # print("VAD detected speech, LLM would read", client_speech[client_id], client_speech[client_id].shape)
-                        # print('popped')
-                        await asyncio.sleep(0.001)
 
-                        # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
-                        if not client_info[client_id]['replaceTrack']:
-
-                            player=MediaPlayer('outputSpeech_'+client_id+'.wav') # Create a MediaPlayer object
-                            track=player.audio # add track to player
-                            audio_sender.replaceTrack(track)
-
-                            client_info[client_id]['replaceTrack'] = True
-                            print("Replaced the track with saved audio for the client")
-
-                        # Start coroutine to handle interrupts
-                        # for example: if audio is streaming back to client and client speaks in the middle, replaceTrack(AudioStreamTrack()) with silence
-                        asyncio.ensure_future(send_audio_back(audio_sender, client_id))
-
-                        # raise SystemExit
-
-                    # if chunk:
-                    #     client_chunks[client_id].append(chunk)
                     audio_buffer.seek(0)
                     audio_buffer.truncate()
 
@@ -266,35 +247,59 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 # dc=client_datachannels[client_id]
                 # dc.send("Iteration inside While Loop")
 
-    # Co-routine that runs just after first pop of the speech segments 
+    # Audio_sender co-routine that should handle all the audio_streaming part
+    # This should include if audio_path is available in the client_audiosender_buffer
+    # # This should also include if client speaks while streaming, it should interrupt  
     async def send_audio_back(audio_sender, client_id):
         # Change interrupt threshold appropriately, likely lower than this, but should be tested
         INTERRUPT_THRESHOLD = 0.8
 
-        print("sending audio back with length (samples)", client_speech[client_id].shape[0])
-        print("client_audio size", client_audio[client_id].shape[0])
+        while True:
+            await asyncio.sleep(0.001)
 
-        # here is where we need to send client_speech to client
+            # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
+            if client_audiosender_buffer[client_id]:
+                audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
+                
+                # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
+                if not client_info[client_id]['streamAudio']:
 
-        # this is for incoming audio after the silence is found, it progressively checks client_audio for interrupts
-        while(client_audio[client_id].shape[0]):
-            np_interrupt = client_audio[client_id][:CHUNK_SAMPLES]
-            print("np_interrupt size", np_interrupt.shape[0])     
-            if np_interrupt.shape[0]>=CHUNK_SAMPLES:   
-                interrupt_audio = torch.from_numpy(np_interrupt).float()
-                interrupt_prob = model(interrupt_audio, SAMPLE_RATE).item()
-                if interrupt_prob >= INTERRUPT_THRESHOLD:
-                    # pass
-                    print('streaming silence to client')
-                    audio_sender.replaceTrack(AudioStreamTrack())
-                    client_info[client_id]['silence_found'] = False
-                    break
-                    # change track to silence
-                else:
-                    # pass and remove the first chunk from the buffer for the client
-                    client_audio[client_id] = client_audio[client_id][CHUNK_SAMPLES:]
-                    print('continue streaming audio to client')
+                    client_info[client_id]['streamAudio'] = True
 
+                    player=MediaPlayer(audio_path) # Create a MediaPlayer object
+                    track=player.audio # add track to player
+                    audio_sender.replaceTrack(track)
+                    
+                    print("Audio is being streamed to the client(samples)", client_speech[client_id].shape[0])
+                    print("client_audio size", client_audio[client_id].shape[0])
+
+                    # track._MediaStreamTrack__ended returns True if entire audio has been recorded by the client
+                    while not track._MediaStreamTrack__ended:
+                        
+                        # this is for incoming audio when audio is being streamed to client, it progressively checks client_audio for interrupts
+                        # if client_info[client_id]['silence_found'] and client_speech[client_id].size:
+                        if(client_audio[client_id].shape[0]):
+                            np_interrupt = client_audio[client_id][:CHUNK_SAMPLES] # Collect samples from client_audio after speech has been popped from it and saved to path which is pushed to client_audiosender_buffer
+                            print("np_interrupt size", np_interrupt.shape[0])     
+                            if np_interrupt.shape[0]>=CHUNK_SAMPLES:   
+                                interrupt_audio = torch.from_numpy(np_interrupt).float()
+                                interrupt_prob = model(interrupt_audio, SAMPLE_RATE).item()
+                                if interrupt_prob >= INTERRUPT_THRESHOLD: # Check if audio is found while streaming and if found stream silence to break from the loop
+                                    # pass
+                                    print('streaming silence to client')
+                                    audio_sender.replaceTrack(AudioStreamTrack())
+                                    client_info[client_id]['silence_found'] = False
+                                    client_info[client_id]['streamAudio'] = False
+                                    break
+                                    # change track to silence
+                                else:
+                                    # pass and remove the first chunk from the buffer for the client
+                                    client_audio[client_id] = client_audio[client_id][CHUNK_SAMPLES:]
+                                    print('continue streaming audio to client')
+
+                    await asyncio.sleep(1) # Introduce slight delay before streamAudio is set False
+                    client_info[client_id]['streamAudio'] = False
+                    audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
 
 
 
