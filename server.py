@@ -59,6 +59,7 @@ resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SA
 # When 'silence_audio' is SILENCE_TIME long (2 seconds), it will pass the speech 
 # to 'client_speech', and pop from 'client_audio'.
 async def VAD(chunk, client_id, threshold_weight = 0.9):
+    n=0
     # Pull information from client_info dictionary and save the
     # appropriate values for use in VAD, editing as needed within
     # VAD function.
@@ -104,15 +105,15 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
                 silence_found=True
                 # TEMPORARY: saving the speech into outputSpeech.wav
                 speech_unsq = torch.unsqueeze(speech_audio, dim=0)
-                torchaudio.save("outputSpeech_"+client_id+".wav", speech_unsq, SAMPLE_RATE)
+                torchaudio.save("outputSpeech_"+client_id+str(n)+".wav", speech_unsq, SAMPLE_RATE)
                 torchaudio.save("testSpeech_"+client_id+str(uuid.uuid4())+".wav", speech_unsq, SAMPLE_RATE)
                 print(f"Speech data saved at outputSpeech_{client_id}.wav")
 
                 if client_id not in client_audiosender_buffer:
                     client_audiosender_buffer[client_id]=[]
 
-                client_audiosender_buffer[client_id].append("outputSpeech_"+client_id+".wav") # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
-                
+                client_audiosender_buffer[client_id].append("outputSpeech_"+client_id+str(n)+".wav") # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                n+=1
                 # Save the speech into a temporary file
                 # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
                 #     speech_unsq = torch.unsqueeze(speech_audio, dim=0)
@@ -263,8 +264,11 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
             # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
             if client_audiosender_buffer and client_audiosender_buffer[client_id]:
+                print(client_audiosender_buffer,client_audiosender_buffer[client_id])
+
                 audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
-                
+                print(audio_path)
+
                 # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
                 if not client_info[client_id]['streamAudio']:
 
@@ -302,7 +306,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                                     # pass and remove the first chunk from the buffer for the client
                                     client_audio[client_id] = client_audio[client_id][CHUNK_SAMPLES:]
                                     print('continue streaming audio to client')
-
+                        print(track._MediaStreamTrack__ended)
+                        
                     await asyncio.sleep(1) # Introduce slight delay before streamAudio is set False
                     client_info[client_id]['streamAudio'] = False
                     audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
