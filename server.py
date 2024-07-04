@@ -23,12 +23,13 @@ client_buffer={} # {'c1':'io.BytesIO()', 'c2':'io.BytesIO()', ...} client buffer
 client_chunks={} # {'c1':[], 'c2':[], ...} client - list mapping dictionary to read from the buffer and check if audio is available in the chunks
 client_datachannels={} # {'c1': channelC1, 'c2':channelC2, ...} client - datachannels mapping dictionary to make channel accessible outside of the event handler
 # logging.basicConfig(level=logging.DEBUG)
-client_audio = {} # {'c1':[[]], 'c2': [[]], ...} client - np.array mapping dictionary for all of client's audio as one np.array, popped when VAD detects silence
 client_speech = {} # {'c1':[[]], 'c2': [[]], ...} client - np.array mapping dictionary for output speech from VAD
 
 client_info = {} # {'c1' : {'speech_tensor':'torch.tensor', 'silence_tensor':'torch.tensor', 'speech_threshold':float 'prob_data': [], 'silence_found':bool}} 
 # client - dictionary mappign dictionary that stores data for the VAD logic, such as the PyTorch tensors for speech and silence, the adaptive thresholding value,
 # and the list of the probabilities for use in the adaptive thresholding logic
+voiced_chunk_count = 0 
+interruption = False
 
 buffer_lock = {}  # buffer_lock to avoid race condition
 client_audiosender_buffer={} # {'c1':['<path to audio which will be used by audio_sender>'], 'c2':[]}
@@ -51,7 +52,10 @@ CHUNK_SIZE = int(CHUNK_SAMPLES * CHANNELS * BIT_DEPTH * (ORIG_SAMPLE/ SAMPLE_RAT
 SILENCE_SAMPLES = SAMPLE_RATE * SILENCE_TIME
 
 resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SAMPLE_RATE)
+
 n=0
+m=0
+
 # VAD function using Silero-VAD model, https://github.com/snakers4/silero-vad,
 # Receives chunk of audio in bytes and converts to PyTorch Tensor. If the chunk
 # has voice in it, the function adds it to a tensor 'speech_audio' and clears 
@@ -59,7 +63,8 @@ n=0
 # When 'silence_audio' is SILENCE_TIME long (2 seconds), it will pass the speech 
 # to 'client_speech', and pop from 'client_audio'.
 async def VAD(chunk, client_id, threshold_weight = 0.9):
-    global n
+    global n, voiced_chunk_count, interruption, m
+
     # Pull information from client_info dictionary and save the
     # appropriate values for use in VAD, editing as needed within
     # VAD function.
@@ -81,39 +86,41 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
     chunk_audio = torch.from_numpy(np_chunk)
     chunk_audio = resample(chunk_audio)
 
-    # Save all chunks to client_audio, collecting for VAD later
-    # or allowing audio_sender to see interruptions.
-    client_audio[client_id] = np.append(client_audio[client_id], chunk_audio.numpy())
-
     # Find prob of speech for using silero-vad model
     speech_prob = model(chunk_audio, SAMPLE_RATE).item()
     prob_data.append(speech_prob)
-
+    
+    if interruption:
+        m += 1
+    
     if not silence_found:
         if speech_prob >= speech_threshold:
             # Add chunk to the speech tensor and clear the silence tensor
             speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
             silence_audio = torch.empty(0)
+            voiced_chunk_count += 1
         else:
             # Add chunk to both silence tensor and speech tensor
             silence_audio = torch.cat((silence_audio, chunk_audio), dim=0)
             speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
             # If the silence is longer than the SILENCE_TIME (2 sec)
-            # pop client_audio and save to client_speech, which LLM
-            # will use
+            # save outputSpeech and add path to
+            # client_audiosender_buffer where send_audio_back will
+            # use the path to play it.
+
             if silence_audio.shape[0] >= SILENCE_SAMPLES:
-                silence_found=True
+                # silence_found=True
                 # TEMPORARY: saving the speech into outputSpeech.wav
                 speech_unsq = torch.unsqueeze(speech_audio, dim=0)
                 torchaudio.save("outputSpeech_"+client_id+str(n)+".wav", speech_unsq, SAMPLE_RATE)
-                torchaudio.save("testSpeech_"+client_id+str(uuid.uuid4())+".wav", speech_unsq, SAMPLE_RATE)
-                print(f"Speech data saved at outputSpeech_{client_id}.wav")
+                print(f" Saved at outputSpeech_"+client_id+str(n)+".wav")
 
                 if client_id not in client_audiosender_buffer:
                     client_audiosender_buffer[client_id]=[]
 
                 client_audiosender_buffer[client_id].append("outputSpeech_"+client_id+str(n)+".wav") # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
-                n+=1
+                # client_audiosender_buffer[client_id].append("outputSpeech_ead0cdc4-b0a2-49fb-b532-8bf4e464fc550.wav")
+                print("voiced chunk count", voiced_chunk_count)
                 # Save the speech into a temporary file
                 # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
                 #     speech_unsq = torch.unsqueeze(speech_audio, dim=0)
@@ -121,12 +128,14 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
                 #     temp_path = temp_wav.name
                 #     print(f"Speech data saved at {temp_path}")
 
-                # pop from client_audio and save into client_speech
-                speech = client_audio[client_id]
-                client_audio[client_id] = np.empty(0)
-                client_info[client_id]['speech_audio'] = torch.empty(0)
-                client_speech[client_id] = speech
-    
+                # save speech data into client_speech
+                client_speech[client_id] = speech_unsq.numpy()
+                speech_audio = torch.empty(0)
+                silence_audio = torch.empty(0)
+                voiced_chunk_count = 0
+
+                n+=1
+
     # Adaptive thresholding which should allow for silence at the beginning
     # of audio and adapt to differing confidence levels of the VAD model.
     # Equation acquired from link:
@@ -135,7 +144,6 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
 
     # Save data back into client_info with updated values
     client_info[client_id] = {'speech_audio':speech_audio, 'silence_audio':silence_audio, 'speech_threshold':speech_threshold, 'prob_data': prob_data, 'silence_found':silence_found, 'streamAudio':False}
-
 
     # audio_sender._track_id and track._MediaStreamTrack__ended
 
@@ -165,7 +173,6 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     audio_buffer = io.BytesIO()
     client_buffer[client_id]=audio_buffer
     client_chunks[client_id]=[]
-    client_audio[client_id]=np.empty(0)
     client_speech[client_id]=np.empty(0)
     client_info[client_id]={'speech_audio':torch.empty(0), 'silence_audio': torch.empty(0), 'speech_threshold':0.0, 'prob_data':[],'silence_found':False}
     buffer_lock[client_id]=asyncio.Lock()
@@ -221,8 +228,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
             del client_buffer[client_id]
             del client_chunks[client_id]
             del client_datachannels[client_id]
-            del client_info[client_id]
-            del client_audio[client_id]  
+            del client_info[client_id] 
             del client_speech[client_id] 
 
     # start writing to buffer with buffer_lock
@@ -255,62 +261,82 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     # This should include if audio_path is available in the client_audiosender_buffer
     # # This should also include if client speaks while streaming, it should interrupt  
     async def send_audio_back(audio_sender, client_id):
+        global voiced_chunk_count, interruption, m
         # print(audio_sender, client_audio)
         # Change interrupt threshold appropriately, likely lower than this, but should be tested
-        INTERRUPT_THRESHOLD = 0.8
+        # INTERRUPT_THRESHOLD = 0.8
 
         while True:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.01)
 
             # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
             if client_audiosender_buffer and client_audiosender_buffer[client_id]:
                 print(client_audiosender_buffer,client_audiosender_buffer[client_id])
 
                 audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
-                print(audio_path)
+                # print(audio_path)
 
-                # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
-                if not client_info[client_id]['streamAudio']:
+                # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loo
+                player=MediaPlayer(audio_path) # Create a MediaPlayer object
+                print(audio_path, voiced_chunk_count)
+                track=player.audio # add track to player
+                audio_sender.replaceTrack(track)
 
-                    client_info[client_id]['streamAudio'] = True
+                count = 0
+                interruption = True
 
-                    player=MediaPlayer(audio_path) # Create a MediaPlayer object
-                    print(audio_path)
-                    track=player.audio # add track to player
-                    audio_sender.replaceTrack(track)
-                    
-                    print("Audio is being streamed to the client(samples)", client_speech[client_id].shape[0])
-                    print("client_audio size", client_audio[client_id].shape[0])
+                while not track._MediaStreamTrack__ended:
+                    print(audio_path, voiced_chunk_count)
+                    count += 1
+                    await asyncio.sleep(0.1)
+                    # print(client_audiosender_buffer,client_audiosender_buffer[client_id])
+                    print(track._MediaStreamTrack__ended)
+                    if voiced_chunk_count >= 5:
+                        print("Detected interruption")
+                        break
+                    # if not track._MediaStreamTrack__ended:
+                    #     print("Audio is being streamed to the client(samples)", client_speech[client_id].shape[0])
+                    #     count += 1
+                    #     track._MediaStreamTrack__ended = True
+                # track._MediaStreamTrack__ended returns True if entire audio has been recorded by the client
 
-                    # track._MediaStreamTrack__ended returns True if entire audio has been recorded by the client
-                    while not track._MediaStreamTrack__ended:
-                        await asyncio.sleep(0.1)
-                        # print(track._MediaStreamTrack__ended)
-                        # this is for incoming audio when audio is being streamed to client, it progressively checks client_audio for interrupts
-                        # if client_info[client_id]['silence_found'] and client_speech[client_id].size:
-                        if(client_audio[client_id].shape[0]):
-                            np_interrupt = client_audio[client_id][:CHUNK_SAMPLES] # Collect samples from client_audio after speech has been popped from it and saved to path which is pushed to client_audiosender_buffer
-                            print("np_interrupt size", np_interrupt.shape[0])     
-                            if np_interrupt.shape[0]>=CHUNK_SAMPLES:   
-                                interrupt_audio = torch.from_numpy(np_interrupt).float()
-                                interrupt_prob = model(interrupt_audio, SAMPLE_RATE).item()
-                                if interrupt_prob >= INTERRUPT_THRESHOLD: # Check if audio is found while streaming and if found stream silence to break from the loop
-                                    # pass
-                                    print('streaming silence to client')
-                                    audio_sender.replaceTrack(AudioStreamTrack())
-                                    client_info[client_id]['silence_found'] = False
-                                    client_info[client_id]['streamAudio'] = False
-                                    break
-                                    # change track to silence
-                                else:
-                                    # pass and remove the first chunk from the buffer for the client
-                                    client_audio[client_id] = client_audio[client_id][CHUNK_SAMPLES:]
-                                    print('continue streaming audio to client')
-                        print(track._MediaStreamTrack__ended)
-                        
-                    await asyncio.sleep(1) # Introduce slight delay before streamAudio is set False
-                    client_info[client_id]['streamAudio'] = False
-                    audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
+                # print("before", track._MediaStreamTrack__ended)
+                
+                print("track ended after", count, "while loop iters and", m, "chunks in VAD")
+                await asyncio.sleep(0.01) # Introduce slight delay before streamAudio is set False
+                audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
+                print("Streaming Silence...")
+                
+    # async def send_audio_back(audio_sender, client_id):
+    #     global voiced_chunk_count, interruption, m
+    #     # print(audio_sender, client_audio)
+    #     # Change interrupt threshold appropriately, likely lower than this, but should be tested
+    #     INTERRUPT_THRESHOLD = 0.8
+
+    #     while True:
+    #         await asyncio.sleep(0.1)
+
+    #         # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
+    #         if client_audiosender_buffer and client_audiosender_buffer[client_id]:
+    #             print(client_audiosender_buffer,client_audiosender_buffer[client_id])
+
+    #             audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
+    #             print(audio_path)
+
+    #             # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
+    #             if not client_info[client_id]['streamAudio']:
+    #                 while True:
+    #                     print(audio_path, voiced_chunk_count)
+    #                     # print("Audio is being streamed to the client(samples)", client_speech[client_id].shape[0])
+    #                     # count += 1
+    #                     await asyncio.sleep(0.1)
+    #                     # print(track._MediaStreamTrack__ended)
+    #                     if voiced_chunk_count >= 5:
+    #                         print("Detected interruption")
+    #                         break
+    #                 # print("track ended after", count, "while loop iters and", m, "chunks in VAD")
+    #                 await asyncio.sleep(1) # Introduce slight delay before streamAudio is set False
+    #                 client_info[client_id]['streamAudio'] = False
 
 
 
@@ -337,17 +363,17 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
 # end point to send audio back to the client (for now just streaming the audio back to the client)
 # endpoint: /audio?client_id=<client_id>
-@app.get("/audio")
-async def get_audio(client_id: int):
-    print(client_buffer)
-    audio_buffer = client_buffer[client_id]
-    audio_buffer.seek(0) # seek the audio buffer to the start of the audio
-    # # Read the entire content of the buffer
-    # audio_data = audio_buffer.read()
+# @app.get("/audio")
+# async def get_audio(client_id: int):
+#     print(client_buffer)
+#     audio_buffer = client_buffer[client_id]
+#     audio_buffer.seek(0) # seek the audio buffer to the start of the audio
+#     # # Read the entire content of the buffer
+#     # audio_data = audio_buffer.read()
     
-    # # Print the audio data on the console
-    # print(audio_data)
-    return StreamingResponse(audio_buffer, media_type="audio/wav") 
+#     # # Print the audio data on the console
+#     # print(audio_data)
+#     return StreamingResponse(audio_buffer, media_type="audio/wav") 
 
 
 # test endpoint to break data into chunks
