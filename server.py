@@ -51,7 +51,7 @@ CHUNK_SIZE = int(CHUNK_SAMPLES * CHANNELS * BIT_DEPTH * (ORIG_SAMPLE/ SAMPLE_RAT
 SILENCE_SAMPLES = SAMPLE_RATE * SILENCE_TIME
 
 resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SAMPLE_RATE)
-
+n=0
 # VAD function using Silero-VAD model, https://github.com/snakers4/silero-vad,
 # Receives chunk of audio in bytes and converts to PyTorch Tensor. If the chunk
 # has voice in it, the function adds it to a tensor 'speech_audio' and clears 
@@ -59,7 +59,7 @@ resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SA
 # When 'silence_audio' is SILENCE_TIME long (2 seconds), it will pass the speech 
 # to 'client_speech', and pop from 'client_audio'.
 async def VAD(chunk, client_id, threshold_weight = 0.9):
-    n=0
+    global n
     # Pull information from client_info dictionary and save the
     # appropriate values for use in VAD, editing as needed within
     # VAD function.
