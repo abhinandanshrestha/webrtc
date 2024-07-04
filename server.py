@@ -264,10 +264,10 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         global voiced_chunk_count, interruption, m
         # print(audio_sender, client_audio)
         # Change interrupt threshold appropriately, likely lower than this, but should be tested
-        INTERRUPT_THRESHOLD = 0.8
+        # INTERRUPT_THRESHOLD = 0.8
 
         while True:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.01)
 
             # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
             if client_audiosender_buffer and client_audiosender_buffer[client_id]:
@@ -281,14 +281,16 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 print(audio_path, voiced_chunk_count)
                 track=player.audio # add track to player
                 audio_sender.replaceTrack(track)
+
                 count = 0
                 interruption = True
 
                 while not track._MediaStreamTrack__ended:
                     print(audio_path, voiced_chunk_count)
                     count += 1
-                    await asyncio.sleep(0.01)
-                    # print(track._MediaStreamTrack__ended)
+                    await asyncio.sleep(0.1)
+                    # print(client_audiosender_buffer,client_audiosender_buffer[client_id])
+                    print(track._MediaStreamTrack__ended)
                     if voiced_chunk_count >= 5:
                         print("Detected interruption")
                         break
@@ -303,7 +305,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 print("track ended after", count, "while loop iters and", m, "chunks in VAD")
                 await asyncio.sleep(0.01) # Introduce slight delay before streamAudio is set False
                 audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
-
+                print("Streaming Silence...")
+                
     # async def send_audio_back(audio_sender, client_id):
     #     global voiced_chunk_count, interruption, m
     #     # print(audio_sender, client_audio)

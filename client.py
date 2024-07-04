@@ -46,13 +46,13 @@ async def run(client_id):
             # await pc.close()
 
     # # Capture audio from the audiofile and stream for now
-    # player = MediaPlayer('./audiotest.wav')
-    # audio_track = player.audio
+    player = MediaPlayer('./audiotest.wav')
+    audio_track = player.audio
 
-    # # Add audio track to the peer connection
-    # pc.addTrack(audio_track)
+    # Add audio track to the peer connection
+    pc.addTrack(audio_track)
         # Add audio track to the peer connection
-    pc.addTrack(MediaPlayer("audio=Microphone Array (Realtek(R) Audio)",format="dshow").audio)
+    # pc.addTrack(MediaPlayer("audio=Microphone Array (Realtek(R) Audio)",format="dshow").audio)
 
     # Audio Received from the server will be saved to a file for now
     
