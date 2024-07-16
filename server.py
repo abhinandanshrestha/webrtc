@@ -133,8 +133,16 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
                 speech_audio = torch.empty(0)
                 silence_audio = torch.empty(0)
                 voiced_chunk_count = 0
-
+                silence_found = True
                 n+=1
+    else:
+        if speech_prob >= speech_threshold:
+
+            # Reset silence_found to False and start accumulating new speech
+            silence_found = False
+            speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
+            silence_audio = torch.empty(0)
+            voiced_chunk_count += 1
 
     # Adaptive thresholding which should allow for silence at the beginning
     # of audio and adapt to differing confidence levels of the VAD model.
@@ -143,7 +151,7 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
     speech_threshold = threshold_weight * max([i**2 for i in prob_data]) + (1 - threshold_weight) * min([i**2 for i in prob_data])
 
     # Save data back into client_info with updated values
-    client_info[client_id] = {'speech_audio':speech_audio, 'silence_audio':silence_audio, 'speech_threshold':speech_threshold, 'prob_data': prob_data, 'silence_found':silence_found, 'streamAudio':False}
+    client_info[client_id] = {'speech_audio':speech_audio, 'silence_audio':silence_audio, 'speech_threshold':speech_threshold, 'prob_data': prob_data, 'silence_found':silence_found}
 
     # audio_sender._track_id and track._MediaStreamTrack__ended
 
@@ -240,9 +248,11 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         while True:
             await asyncio.sleep(0.01)  # adjust the sleep time based on your requirements
             async with buffer_lock[client_id]:
+                
                 audio_buffer = client_buffer[client_id]
-                audio_buffer.seek(0, io.SEEK_END)
-                size = audio_buffer.tell()
+                audio_buffer.seek(0, io.SEEK_END) # seek to end of audio
+                size = audio_buffer.tell() # size of audio
+                
                 if size>=CHUNK_SIZE:
                     audio_buffer.seek(0, io.SEEK_SET)
                     chunk = audio_buffer.read(CHUNK_SIZE)
@@ -267,7 +277,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         # INTERRUPT_THRESHOLD = 0.8
 
         while True:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)
 
             # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
             if client_audiosender_buffer and client_audiosender_buffer[client_id]:
@@ -286,14 +296,16 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 interruption = True
 
                 while not track._MediaStreamTrack__ended:
-                    print(audio_path, voiced_chunk_count)
-                    count += 1
                     await asyncio.sleep(0.1)
                     # print(client_audiosender_buffer,client_audiosender_buffer[client_id])
-                    print(track._MediaStreamTrack__ended)
+                    # print(track._MediaStreamTrack__ended, count)
+                    print(audio_path, voiced_chunk_count)
+                    count += 1
+                    
                     if voiced_chunk_count >= 5:
                         print("Detected interruption")
                         break
+
                     # if not track._MediaStreamTrack__ended:
                     #     print("Audio is being streamed to the client(samples)", client_speech[client_id].shape[0])
                     #     count += 1
@@ -303,7 +315,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 # print("before", track._MediaStreamTrack__ended)
                 
                 print("track ended after", count, "while loop iters and", m, "chunks in VAD")
-                await asyncio.sleep(0.01) # Introduce slight delay before streamAudio is set False
+                await asyncio.sleep(0.1) # Introduce slight delay before streamAudio is set False
                 audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
                 print("Streaming Silence...")
                 
