@@ -281,16 +281,18 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
             # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
             if client_audiosender_buffer and client_audiosender_buffer[client_id]:
-                print(client_audiosender_buffer,client_audiosender_buffer[client_id])
+                print('Content of audio_buffer: ',client_audiosender_buffer)
 
                 audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
-                # print(audio_path)
+                print(audio_path,' path popped from buffer')
 
                 # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loo
                 player=MediaPlayer(audio_path) # Create a MediaPlayer object
-                print(audio_path, voiced_chunk_count)
                 track=player.audio # add track to player
+
+                print('Track ID before replacing',audio_sender._track_id)
                 audio_sender.replaceTrack(track)
+                print('Track ID after replacing',audio_sender._track_id, '\nReplaced Track with actual audio to stream')
 
                 count = 0
                 interruption = True
@@ -299,59 +301,19 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                     await asyncio.sleep(0.1)
                     # print(client_audiosender_buffer,client_audiosender_buffer[client_id])
                     # print(track._MediaStreamTrack__ended, count)
-                    print(audio_path, voiced_chunk_count)
+                    print('voiced_chunk_count: ',voiced_chunk_count)
                     count += 1
                     
                     if voiced_chunk_count >= 5:
                         print("Detected interruption")
                         break
 
-                    # if not track._MediaStreamTrack__ended:
-                    #     print("Audio is being streamed to the client(samples)", client_speech[client_id].shape[0])
-                    #     count += 1
-                    #     track._MediaStreamTrack__ended = True
-                # track._MediaStreamTrack__ended returns True if entire audio has been recorded by the client
-
-                # print("before", track._MediaStreamTrack__ended)
-                
                 print("track ended after", count, "while loop iters and", m, "chunks in VAD")
                 await asyncio.sleep(0.1) # Introduce slight delay before streamAudio is set False
+                print('Track ID before replacing with silence',audio_sender._track_id)
                 audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
-                print("Streaming Silence...")
+                print('Track ID after replacing',audio_sender._track_id,'\nStreaming Silence')
                 
-    # async def send_audio_back(audio_sender, client_id):
-    #     global voiced_chunk_count, interruption, m
-    #     # print(audio_sender, client_audio)
-    #     # Change interrupt threshold appropriately, likely lower than this, but should be tested
-    #     INTERRUPT_THRESHOLD = 0.8
-
-    #     while True:
-    #         await asyncio.sleep(0.1)
-
-    #         # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
-    #         if client_audiosender_buffer and client_audiosender_buffer[client_id]:
-    #             print(client_audiosender_buffer,client_audiosender_buffer[client_id])
-
-    #             audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
-    #             print(audio_path)
-
-    #             # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loop
-    #             if not client_info[client_id]['streamAudio']:
-    #                 while True:
-    #                     print(audio_path, voiced_chunk_count)
-    #                     # print("Audio is being streamed to the client(samples)", client_speech[client_id].shape[0])
-    #                     # count += 1
-    #                     await asyncio.sleep(0.1)
-    #                     # print(track._MediaStreamTrack__ended)
-    #                     if voiced_chunk_count >= 5:
-    #                         print("Detected interruption")
-    #                         break
-    #                 # print("track ended after", count, "while loop iters and", m, "chunks in VAD")
-    #                 await asyncio.sleep(1) # Introduce slight delay before streamAudio is set False
-    #                 client_info[client_id]['streamAudio'] = False
-
-
-
     # Handshake with the clients to make WebRTC Connections
     try:
         offer_desc = RTCSessionDescription(sdp=sdp, type=type)
