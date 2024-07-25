@@ -14,11 +14,16 @@ import torchaudio
 import shutil
 import tempfile
 import uuid
+import av
+import time
+from fractions import Fraction
 # import logging
 
 app = FastAPI() # Initialize the FastAPI 
 
 pcs = set() # set of peer connections
+
+client_send_queue={}
 client_buffer={} # {'c1':'io.BytesIO()', 'c2':'io.BytesIO()', ...} client buffer mapping dictionary to store streaming audio data into buffer
 client_chunks={} # {'c1':[], 'c2':[], ...} client - list mapping dictionary to read from the buffer and check if audio is available in the chunks
 client_datachannels={} # {'c1': channelC1, 'c2':channelC2, ...} client - datachannels mapping dictionary to make channel accessible outside of the event handler
@@ -52,6 +57,7 @@ CHUNK_SIZE = int(CHUNK_SAMPLES * CHANNELS * BIT_DEPTH * (ORIG_SAMPLE/ SAMPLE_RAT
 SILENCE_SAMPLES = SAMPLE_RATE * SILENCE_TIME
 
 resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SAMPLE_RATE)
+resample_back= torchaudio.transforms.Resample(orig_freq = SAMPLE_RATE, new_freq = ORIG_SAMPLE)
 
 n=0
 m=0
@@ -83,6 +89,7 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
     np_chunk = np.frombuffer(chunk, dtype = np.int16)
     np_chunk = np_chunk.astype(np.float32) / 32768.0
     np_chunk = np_chunk.reshape(-1, CHANNELS).mean(axis = 1)
+    # print(np_chunk.shape)
     chunk_audio = torch.from_numpy(np_chunk)
     chunk_audio = resample(chunk_audio)
 
@@ -99,6 +106,7 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
             speech_audio = torch.cat((speech_audio, chunk_audio), dim=0)
             silence_audio = torch.empty(0)
             voiced_chunk_count += 1
+
         else:
             # Add chunk to both silence tensor and speech tensor
             silence_audio = torch.cat((silence_audio, chunk_audio), dim=0)
@@ -112,21 +120,18 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
                 # silence_found=True
                 # TEMPORARY: saving the speech into outputSpeech.wav
                 speech_unsq = torch.unsqueeze(speech_audio, dim=0)
-                torchaudio.save("outputSpeech_"+client_id+str(n)+".wav", speech_unsq, SAMPLE_RATE)
-                print(f" Saved at outputSpeech_"+client_id+str(n)+".wav")
+                # torchaudio.save("outputSpeech_"+client_id+str(n)+".wav", speech_unsq, SAMPLE_RATE)
+                # np.savetxt('speech_unsq'+str(n)+'.txt', speech_unsq.numpy())
+                # print(f" Saved at outputSpeech_"+client_id+str(n)+".wav")
 
-                if client_id not in client_audiosender_buffer:
-                    client_audiosender_buffer[client_id]=[]
+                if client_id not in client_send_queue:
+                    client_send_queue[client_id]=asyncio.Queue()
 
-                client_audiosender_buffer[client_id].append("outputSpeech_"+client_id+str(n)+".wav") # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                # print(speech_unsq.numpy())
+                await client_send_queue[client_id].put(resample_back(speech_unsq).numpy()) # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                
                 # client_audiosender_buffer[client_id].append("outputSpeech_ead0cdc4-b0a2-49fb-b532-8bf4e464fc550.wav")
-                print("voiced chunk count", voiced_chunk_count)
-                # Save the speech into a temporary file
-                # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
-                #     speech_unsq = torch.unsqueeze(speech_audio, dim=0)
-                #     torchaudio.save(temp_wav.name, speech_unsq, SAMPLE_RATE)
-                #     temp_path = temp_wav.name
-                #     print(f"Speech data saved at {temp_path}")
+                # print("voiced chunk count", voiced_chunk_count)
 
                 # save speech data into client_speech
                 client_speech[client_id] = speech_unsq.numpy()
@@ -166,6 +171,80 @@ class BufferMediaRecorder(MediaRecorder):
         self.__container = av.open(buffer, format=format, mode="w") 
         self.__tracks = {} 
         super().__init__(buffer, format=format) 
+
+
+class NumpyAudioStreamTrack(MediaStreamTrack):
+    """
+    Custom class that inherits from MediaStreamTrack and reads
+    from a NumPy array, converting it to a MediaStreamTrack object.
+    """
+
+    kind = "audio"
+
+    def __init__(self, audio_array, add_silence=False, sample_rate=48000, channels=1, samples_per_frame=960):
+        super().__init__()  # Initialize the MediaStreamTrack base class
+        self.audio_array = audio_array
+        self.add_silence = add_silence
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.sample_width = 2  # Assuming 16-bit samples (2 bytes per sample)
+        self.samples_per_frame = samples_per_frame
+        self.pts = 0  # Initialize PTS counter
+        self._start = None  # Track the start time
+        self._timestamp = 0  # Track the elapsed samples
+        self.frame_index = 0  # Track the current frame index
+
+    async def recv(self):
+
+        if self.add_silence:
+            self.audio_array=np.append(self.audio_array,np.zeros(self.sample_rate))
+
+        if self._start is None:
+            self._start = time.time()
+
+        # Calculate the number of samples to read for this frame
+        start_index = self.frame_index * self.samples_per_frame * self.channels
+        end_index = start_index + self.samples_per_frame * self.channels
+
+        if end_index > len(self.audio_array):
+            raise EOFError("End of audio stream")
+
+        # Get the audio data for the current frame
+        data = self.audio_array[start_index:end_index]
+
+        # Update the frame index for the next read
+        self.frame_index += 1
+
+        # Reshape the array to be 2D: (number of frames, number of channels)
+        data = data.reshape(-1, self.channels)
+
+        # Convert float64 data to int16
+        if data.dtype == np.float64:
+            # Normalize and convert to int16
+            data = np.clip(data, -1.0, 1.0)  # Ensure values are in the range [-1.0, 1.0]
+            data = (data * 32767).astype(np.int16)
+
+        # print(data.shape)
+
+        frame = av.AudioFrame.from_ndarray(
+            data.T,
+            format="s16",
+            layout="stereo" if self.channels == 2 else "mono"
+        )
+
+        frame.sample_rate = self.sample_rate
+        frame.time_base = Fraction(1, self.sample_rate)
+        frame.pts = self.pts
+        self.pts += self.samples_per_frame
+
+        # Calculate wait time to synchronize the audio
+        self._timestamp += self.samples_per_frame
+        wait = self._start + (self._timestamp / self.sample_rate) - time.time()
+
+        if wait > 0.001:
+            await asyncio.sleep(wait)
+
+        return frame
 
 
 # endpoint to accept offer from webrtc client for handshaking
@@ -275,45 +354,67 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         # print(audio_sender, client_audio)
         # Change interrupt threshold appropriately, likely lower than this, but should be tested
         # INTERRUPT_THRESHOLD = 0.8
-
+        replace_track=True
+        audio_array=np.array([])
+        i=1
         while True:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.01)
 
             # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
-            if client_audiosender_buffer and client_audiosender_buffer[client_id]:
-                print('Content of audio_buffer: ',client_audiosender_buffer)
+            if client_send_queue and client_send_queue[client_id]:
+                # print('queue size:', client_send_queue[client_id].qsize())
 
-                audio_path=client_audiosender_buffer[client_id].pop(0) # Pop audio_path from audio_sender_buffer of client that has to be sent
-                print(audio_path,' path popped from buffer')
+                if client_send_queue[client_id].empty():  # Check if the queue is empty
+                    # await asyncio.sleep(1)
+                    # print('queue empty and audio_array length',len(audio_array))
+                    # numpy_track.add_silence=True
+                    print('queue empty --> append silence at the end of array and audio_array length =',numpy_track.audio_array.shape)
+                    # audio_array = np.append(audio_array, np.zeros(16000))
+                    # print('appended silence: ', np.zeros(44100))
 
-                # Use replaceTrack flag to replace the track with the saved outputSpeech just once instead of replacing in a loo
-                player=MediaPlayer(audio_path) # Create a MediaPlayer object
-                track=player.audio # add track to player
-
-                print('Track ID before replacing',audio_sender._track_id)
-                audio_sender.replaceTrack(track)
-                print('Track ID after replacing',audio_sender._track_id, '\nReplaced Track with actual audio to stream')
-
-                count = 0
-                interruption = True
-
-                while not track._MediaStreamTrack__ended:
-                    await asyncio.sleep(0.1)
-                    # print(client_audiosender_buffer,client_audiosender_buffer[client_id])
-                    # print(track._MediaStreamTrack__ended, count)
-                    print('voiced_chunk_count: ',voiced_chunk_count)
-                    count += 1
+                else:
                     
-                    if voiced_chunk_count >= 5:
-                        print("Detected interruption")
-                        break
+                    audio_array = await client_send_queue[client_id].get()
 
-                print("track ended after", count, "while loop iters and", m, "chunks in VAD")
-                await asyncio.sleep(0.1) # Introduce slight delay before streamAudio is set False
-                print('Track ID before replacing with silence',audio_sender._track_id)
-                audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
-                print('Track ID after replacing',audio_sender._track_id,'\nStreaming Silence')
-                
+                    # print(audio_array, audio_array.shape)
+                    numpy_track=NumpyAudioStreamTrack(audio_array, add_silence=True)
+                        
+                    # numpy_track.audio_array=audio_array
+                    # numpy_track.add_silence=False
+                    replace_track=True
+                    # audio_array = np.append(audio_array, audio_data)
+                    # print(audio_data)
+                    client_send_queue[client_id].task_done()  # Indicate that the item has been consumed from the queue
+                    # print('queue size:', client_send_queue[client_id].qsize())
+                    
+                if replace_track:
+                    # print(audio_array)
+                    # numpy_track=NumpyAudioStreamTrack(audio_array)
+                    audio_sender.replaceTrack(numpy_track)
+                    replace_track=False
+
+
+
+                # count = 0
+                # interruption = True
+
+                # while True:
+                #     await asyncio.sleep(0.01)
+                #     # print(client_audiosender_buffer,client_audiosender_buffer[client_id])
+                #     # print(track._MediaStreamTrack__ended, count)
+                #     print('voiced_chunk_count: ',voiced_chunk_count)
+                #     count += 1
+                    
+                #     if voiced_chunk_count >= 5:
+                #         print("Detected interruption")
+                #         break
+
+                # print("track ended after", count, "while loop iters and", m, "chunks in VAD")
+                # await asyncio.sleep(0.01) # Introduce slight delay 
+                # print('Track ID before replacing with silence',audio_sender._track_id)
+                # audio_sender.replaceTrack(AudioStreamTrack()) # Once all the audio has been streamed to the client, stream Silence again
+                # print('Track ID after replacing',audio_sender._track_id,'\nStreaming Silence')
+
     # Handshake with the clients to make WebRTC Connections
     try:
         offer_desc = RTCSessionDescription(sdp=sdp, type=type)
@@ -397,4 +498,71 @@ def getClients():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="localhost", port=8080) # Increase the number of workers as needed and limit_max_requests
+    uvicorn.run(app, host="localhost", port=8081) # Increase the number of workers as needed and limit_max_requests
+
+
+# class NumpyAudioStreamTrack(MediaStreamTrack):
+#     """
+#     Custom class that inherits from MediaStreamTrack and reads
+#     from a NumPy array, converting it to a MediaStreamTrack object.
+#     """
+
+#     kind = "audio"
+
+#     def __init__(self, audio_array, sample_rate=16000, channels=1, samples_per_frame=960):
+#         super().__init__()  # Initialize the MediaStreamTrack base class
+#         self.audio_array = audio_array
+#         self.sample_rate = sample_rate
+#         self.channels = channels
+#         self.sample_width = 4  # Assuming 16-bit samples (2 bytes per sample)
+#         self.samples_per_frame = samples_per_frame
+#         self.pts = 0  # Initialize PTS counter
+#         self._start = None  # Track the start time
+#         self._timestamp = 0  # Track the elapsed samples
+#         self.frame_index = 0  # Track the current frame index
+
+#     async def recv(self):
+
+#         if self._start is None:
+#             self._start = time.time()
+
+#         # Calculate the number of samples to read for this frame
+#         start_index = self.frame_index * self.samples_per_frame * self.channels
+#         end_index = start_index + self.samples_per_frame * self.channels
+
+#         if end_index > len(self.audio_array):
+#             raise EOFError("End of audio stream")
+
+#         # Get the audio data for the current frame
+#         data = self.audio_array[start_index:end_index]
+
+#         # Update the frame index for the next read
+#         self.frame_index += 1
+
+#         # Reshape the array to be 2D: (number of frames, number of channels)
+#         data = data.reshape(-1, self.channels)
+
+#         # Convert float64 data to int16
+#         if data.dtype == np.float64:
+#             # Normalize and convert to int16
+#             data = np.clip(data, -1.0, 1.0)  # Ensure values are in the range [-1.0, 1.0]
+#             data = (data * 32768).astype(np.int16)
+
+#         frame = av.AudioFrame.from_ndarray(
+#             data.T,
+#             format="s16",
+#             layout="stereo" if self.channels == 2 else "mono"
+#         )
+
+#         frame.sample_rate = self.sample_rate
+#         frame.time_base = Fraction(1, self.sample_rate)
+#         frame.pts = self.pts
+#         self.pts += self.samples_per_frame
+
+#         # Calculate wait time to synchronize the audio
+#         self._timestamp += self.samples_per_frame
+#         wait = self._start + (self._timestamp / self.sample_rate) - time.time()
+#         if wait > 0:
+#             await asyncio.sleep(wait)
+
+#         return frame

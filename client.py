@@ -34,9 +34,9 @@ async def run(client_id):
     # print(id(pc))
     channel = pc.createDataChannel("chat")
 
-    # recorder = MediaRecorder('receivedFromServer_'+client_id+'.wav')
-    audio_buffer = io.BytesIO()
-    recorder = BufferMediaRecorder(audio_buffer)
+    recorder = MediaRecorder('receivedFromServer_'+client_id+'.wav')
+    # audio_buffer = io.BytesIO()
+    # recorder = BufferMediaRecorder(audio_buffer)
 
     @channel.on("open")
     def on_open():
@@ -50,6 +50,7 @@ async def run(client_id):
 
     @pc.on("track")
     async def on_track(track):
+        print('hello abhinandan')
         print(f"Track{track.kind} received. Make sure .start() is called to start recording")
 
         if track.kind == "audio":
@@ -66,7 +67,8 @@ async def run(client_id):
 
     # If we want to stream directly from the Microphone, we can simply pass "audio= <Microphone device name and ffmpeg compatible format>" to MediaPlayer
     # # Capture audio from the audiofile and stream for now
-    player = MediaPlayer('./audiotest.wav')
+    player = MediaPlayer('test-audios/8.wav')
+    # player = MediaPlayer('audiotest.wav')
     audio_track = player.audio
 
     # Add audio track to the peer connection
@@ -83,7 +85,7 @@ async def run(client_id):
     }
 
     try:
-        response = requests.post("http://localhost:8080/offer", data=sdp_offer)
+        response = requests.post("http://localhost:8081/offer", data=sdp_offer)
         # print(response)
         if response.status_code == 200:
             answer = response.json()
@@ -92,24 +94,24 @@ async def run(client_id):
             await pc.setRemoteDescription(answer_desc)
             while True:
                 
-                await asyncio.sleep(20)
-                print('we can save content of buffer to a file')
-                bytes_content = audio_buffer.getvalue() # Get entire content of BytesIO object
+                await asyncio.sleep(0.1)
+                # print('we can save content of buffer to a file')
+                # bytes_content = audio_buffer.getvalue() # Get entire content of BytesIO object
+                # print(audio_buffer.tell())
+                # output_audio_file = 'receivedFromServer'+client_id+'.wav'
 
-                output_audio_file = 'receivedFromServer.wav'
+                # # Save content as an audio file
+                # # Note that MediaRecorder will always get audio_date of sample_width of 2, channels =2 and framerate = 48000
+                # with wave.open(output_audio_file, "wb") as audio_file:
+                #     n_channels = 2 # Number of channels
+                #     sampwidth = 2  # Sample width in bytes (e.g., 2 bytes for 16-bit audio)
+                #     framerate = 48000  # Frame rate (samples per second)
+                #     n_frames = len(bytes_content) // sampwidth
 
-                # Save content as an audio file
-                # Note that MediaRecorder will always get audio_date of sample_width of 2, channels =2 and framerate = 48000
-                with wave.open(output_audio_file, "wb") as audio_file:
-                    n_channels = 2 # Number of channels
-                    sampwidth = 2  # Sample width in bytes (e.g., 2 bytes for 16-bit audio)
-                    framerate = 48000  # Frame rate (samples per second)
-                    n_frames = len(bytes_content) // sampwidth
-
-                    audio_file.setnchannels(n_channels)
-                    audio_file.setsampwidth(sampwidth)
-                    audio_file.setframerate(framerate)
-                    audio_file.writeframes(bytes_content)
+                #     audio_file.setnchannels(n_channels)
+                #     audio_file.setsampwidth(sampwidth)
+                #     audio_file.setframerate(framerate)
+                #     audio_file.writeframes(bytes_content)
 
                 # print(sdp_offer)
                 
