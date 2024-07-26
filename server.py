@@ -23,21 +23,28 @@ app = FastAPI() # Initialize the FastAPI
 
 pcs = set() # set of peer connections
 
-client_send_queue={}
-client_buffer={} # {'c1':'io.BytesIO()', 'c2':'io.BytesIO()', ...} client buffer mapping dictionary to store streaming audio data into buffer
-client_chunks={} # {'c1':[], 'c2':[], ...} client - list mapping dictionary to read from the buffer and check if audio is available in the chunks
-client_datachannels={} # {'c1': channelC1, 'c2':channelC2, ...} client - datachannels mapping dictionary to make channel accessible outside of the event handler
+# client_chunks={} # {'c1':[], 'c2':[], ...} client - list mapping dictionary to read from the buffer and check if audio is available in the chunks
+# client_datachannels={} # {'c1': channelC1, 'c2':channelC2, ...} client - datachannels mapping dictionary to make channel accessible outside of the event handler
 # logging.basicConfig(level=logging.DEBUG)
-client_speech = {} # {'c1':[[]], 'c2': [[]], ...} client - np.array mapping dictionary for output speech from VAD
+# client_speech = {} # {'c1':[[]], 'c2': [[]], ...} client - np.array mapping dictionary for output speech from VAD
+# client_audiosender_buffer={} # {'c1':['<path to audio which will be used by audio_sender>'], 'c2':[]}
 
-client_info = {} # {'c1' : {'speech_tensor':'torch.tensor', 'silence_tensor':'torch.tensor', 'speech_threshold':float 'prob_data': [], 'silence_found':bool}} 
 # client - dictionary mappign dictionary that stores data for the VAD logic, such as the PyTorch tensors for speech and silence, the adaptive thresholding value,
 # and the list of the probabilities for use in the adaptive thresholding logic
+
+client_buffer={} # {'c1':'io.BytesIO()', 'c2':'io.BytesIO()', ...} client buffer mapping dictionary to store streaming audio data received from client into buffer
+client_info = {} # {'c1' : {'speech_tensor':'torch.tensor', 'silence_tensor':'torch.tensor', 'speech_threshold':float 'prob_data': [], 'silence_found':bool}} 
+
+asr_queue={} # {'c1':asyncio.Queue(), 'c2':asyncio.Queue(), 'c3':asyncio.Queue(), 'c4':asyncio.Queue(),..} stores audio data passed from VAD to extract text out of audio
+llm_queue={} # {'c1':asyncio.Queue(), 'c2':asyncio.Queue(), 'c3':asyncio.Queue(), 'c4':asyncio.Queue(),..} stores text passed by asr to feed text to LLM
+tts_queue={} # {'c1':asyncio.Queue(), 'c2':asyncio.Queue(), 'c3':asyncio.Queue(), 'c4':asyncio.Queue(),..} stores text passed by LLM to convert text back to the audio_array
+audio_sender_queue={} # {'c1':asyncio.Queue(), 'c2':asyncio.Queue(), 'c3':asyncio.Queue(), 'c4':asyncio.Queue(),..} queue that stores audio_array that has to be streamed back to the client
+
 voiced_chunk_count = 0 
 interruption = False
 
 buffer_lock = {}  # buffer_lock to avoid race condition
-client_audiosender_buffer={} # {'c1':['<path to audio which will be used by audio_sender>'], 'c2':[]}
+
 
 # loading model for vad
 model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
@@ -124,17 +131,17 @@ async def VAD(chunk, client_id, threshold_weight = 0.9):
                 # np.savetxt('speech_unsq'+str(n)+'.txt', speech_unsq.numpy())
                 # print(f" Saved at outputSpeech_"+client_id+str(n)+".wav")
 
-                if client_id not in client_send_queue:
-                    client_send_queue[client_id]=asyncio.Queue()
+                if client_id not in audio_sender_queue:
+                    audio_sender_queue[client_id]=asyncio.Queue()
 
                 # print(speech_unsq.numpy())
-                await client_send_queue[client_id].put(resample_back(speech_unsq).numpy()) # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                await audio_sender_queue[client_id].put(resample_back(speech_unsq).numpy()) # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
                 
                 # client_audiosender_buffer[client_id].append("outputSpeech_ead0cdc4-b0a2-49fb-b532-8bf4e464fc550.wav")
                 # print("voiced chunk count", voiced_chunk_count)
 
                 # save speech data into client_speech
-                client_speech[client_id] = speech_unsq.numpy()
+                # client_speech[client_id] = speech_unsq.numpy()
                 speech_audio = torch.empty(0)
                 silence_audio = torch.empty(0)
                 voiced_chunk_count = 0
@@ -259,8 +266,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     # Separate out buffer for each peer connection
     audio_buffer = io.BytesIO()
     client_buffer[client_id]=audio_buffer
-    client_chunks[client_id]=[]
-    client_speech[client_id]=np.empty(0)
+    # client_chunks[client_id]=[]
+    # client_speech[client_id]=np.empty(0)
     client_info[client_id]={'speech_audio':torch.empty(0), 'silence_audio': torch.empty(0), 'speech_threshold':0.0, 'prob_data':[],'silence_found':False}
     buffer_lock[client_id]=asyncio.Lock()
     # By default, records the received audio to a file
@@ -271,7 +278,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     # event handler for data channel
     @pc.on("datachannel")
     def on_datachannel(channel):
-        client_datachannels[client_id]=channel # to make datachannel accessible outside of this scope
+        # client_datachannels[client_id]=channel # to make datachannel accessible outside of this scope
         channel.send(f"Hello I'm server")
 
         @channel.on("message")
@@ -313,10 +320,10 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
             print(f"Connection state is {pc.connectionState}, cleaning up")
             pcs.discard(client_id)
             del client_buffer[client_id]
-            del client_chunks[client_id]
-            del client_datachannels[client_id]
+            # del client_chunks[client_id]
+            # del client_datachannels[client_id]
             del client_info[client_id] 
-            del client_speech[client_id] 
+            # del client_speech[client_id] 
 
     # start writing to buffer with buffer_lock
     async def start_recorder(recorder): 
@@ -346,6 +353,30 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                 # dc=client_datachannels[client_id]
                 # dc.send("Iteration inside While Loop")
 
+    async def asr():
+
+        while True:
+            await asyncio.sleep(0.01)
+
+            if asr_queue and asr_queue[client_id]:
+                print('text extracted from speech')
+
+
+    async def llm():
+        while True:
+            await asyncio.sleep(0.01)
+
+            if llm_queue and llm_queue[client_id]:
+                print('got response from llm')
+
+    async def tts():
+        while True:
+            await asyncio.sleep(0.01)
+
+            if tts_queue and tts_queue[client_id]:
+                print('text converted to audio')
+                print('push audio array to audio_sender_queue')
+
     # Audio_sender co-routine that should handle all the audio_streaming part
     # This should include if audio_path is available in the client_audiosender_buffer
     # # This should also include if client speaks while streaming, it should interrupt  
@@ -360,11 +391,10 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         while True:
             await asyncio.sleep(0.01)
 
-            # Check if audio_path is written to client_audiosender_buffer from which audio has to be streamed to the client
-            if client_send_queue and client_send_queue[client_id]:
-                # print('queue size:', client_send_queue[client_id].qsize())
+            if audio_sender_queue and audio_sender_queue[client_id]:
+                # print('queue size:', audio_sender_queue[client_id].qsize())
 
-                if client_send_queue[client_id].empty():  # Check if the queue is empty
+                if audio_sender_queue[client_id].empty():  # Check if the queue is empty
                     # await asyncio.sleep(1)
                     # print('queue empty and audio_array length',len(audio_array))
                     # numpy_track.add_silence=True
@@ -374,7 +404,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
                 else:
                     
-                    audio_array = await client_send_queue[client_id].get()
+                    audio_array = await audio_sender_queue[client_id].get()
 
                     # print(audio_array, audio_array.shape)
                     numpy_track=NumpyAudioStreamTrack(audio_array, add_silence=True)
@@ -384,8 +414,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
                     replace_track=True
                     # audio_array = np.append(audio_array, audio_data)
                     # print(audio_data)
-                    client_send_queue[client_id].task_done()  # Indicate that the item has been consumed from the queue
-                    # print('queue size:', client_send_queue[client_id].qsize())
+                    audio_sender_queue[client_id].task_done()  # Indicate that the item has been consumed from the queue
+                    # print('queue size:', audio_sender_queue[client_id].qsize())
                     
                 if replace_track:
                     # print(audio_array)
@@ -490,7 +520,7 @@ def getClients():
     return {
         "clients": list(pcs),  # Convert set to list for JSON serialization
         "client_buffer": list(client_buffer.keys()),  # Get all client IDs in the buffer
-        "client_chunks": {client_id: len(chunks) for client_id, chunks in client_chunks.items()} , # Get all client chunks and their sizes
+        # "client_chunks": {client_id: len(chunks) for client_id, chunks in client_chunks.items()} , # Get all client chunks and their sizes
         "client_indi_chunk": {client_id: len(chunks[0]) for client_id, chunks in client_chunks.items()},
         "client_sum_chunk": {client_id: sum(len(chunk) for chunk in chunks) for client_id, chunks in client_chunks.items()}
     }
