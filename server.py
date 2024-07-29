@@ -17,10 +17,12 @@ import uuid
 import av
 import time
 from fractions import Fraction
+import gc
 # import logging
 
 app = FastAPI() # Initialize the FastAPI 
 pcs = set() # set of peer connections
+clients={} # set of client instances that can be cleanedup once the client disconnects
 
 # loading model for vad
 model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
@@ -127,6 +129,7 @@ class NumpyAudioStreamTrack(MediaStreamTrack):
 
         return frame
 
+
 class Client:
     '''
         For Managing Co-routines and Readability, we'll use different co-routines as member functions of Client
@@ -149,10 +152,11 @@ class Client:
         self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
 
+
     # A Co-routine that starts recording audio_butes into audio_buffer
     async def start_recorder(self, recorder): 
         async with self.buffer_lock:
-            await recorder.start()
+            await recorder.start() # recorder is instance of BufferMediaRecorder Class that records to audio_buffer datamember
     
     # A co-routine that reads chunks from the audio_buffer where server is writing audio_bytes continuously into
     async def read_buffer_chunks(self):
@@ -289,7 +293,7 @@ class Client:
                 # print('queue size:', self.audio_sender_queue.qsize())
 
                 if self.audio_sender_queue.empty():  # Check if the queue is empty
-                    # await asyncio.sleep(1)
+                    await asyncio.sleep(1)
                     # print('queue empty and audio_array length',len(audio_array))
                     # numpy_track.add_silence=True
                     print('queue empty --> append silence at the end of array and audio_array length =',numpy_track.audio_array.shape)
@@ -327,6 +331,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     pcs.add(client_id) # add peer connection to set of peer connections
 
     client=Client(client_id)
+    clients[client_id] = client  # Add the client to the clients dictionary, which can be cleaned up once the client disconnects
 
     recorder = BufferMediaRecorder(client.audio_buffer)
 
@@ -373,7 +378,20 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         # print(pc.connectionState)
         if pc.connectionState in ["failed", "closed", "disconnected"]:
             print(f"Connection state is {pc.connectionState}, cleaning up")
-            pcs.discard(client_id)
+            print("Deleting client_id:", client_id)
+
+            await recorder.stop()
+
+            clients.pop(client_id, None)  # Remove the client from the clients dictionary
+            pcs.discard(pc)  # Remove the pc from the set of peer connections
+
+            await pc.close()
+
+            # Manually trigger garbage collection
+            collected = gc.collect()
+
+            # Verify memory release
+            print(f"Garbage collector collected {collected} objects.")
 
     # Handshake with the clients to make WebRTC Connections
     try:
@@ -400,7 +418,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 def getClients():
 
     return {
-        "clients": list(pcs)
+        "clients": list(pcs),
+        "active": list(clients.keys())
     }
 
 
