@@ -20,7 +20,6 @@ from fractions import Fraction
 # import logging
 
 app = FastAPI() # Initialize the FastAPI 
-
 pcs = set() # set of peer connections
 
 # loading model for vad
@@ -150,11 +149,12 @@ class Client:
         self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
 
-    # start writing to buffer with buffer_lock
+    # A Co-routine that starts recording audio_butes into audio_buffer
     async def start_recorder(self, recorder): 
         async with self.buffer_lock:
             await recorder.start()
     
+    # A co-routine that reads chunks from the audio_buffer where server is writing audio_bytes continuously into
     async def read_buffer_chunks(self):
         while True:
             await asyncio.sleep(0.01)  # adjust the sleep time based on your requirements
