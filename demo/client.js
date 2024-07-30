@@ -115,7 +115,7 @@ function negotiate() {
         formData.append('type', offer.type);
         formData.append('client_id', client_id);
 
-        return fetch('/offer', {
+        return fetch('http://localhost:8080/offer', {
             body: formData,
             method: 'POST'
         });

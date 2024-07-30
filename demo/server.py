@@ -6,6 +6,8 @@ import os
 import ssl
 import uuid
 
+from starlette.middleware.cors import CORSMiddleware
+
 import aiofiles
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -31,6 +33,13 @@ logger = logging.getLogger("pc")
 pcs = set()
 
 app = FastAPI()
+app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+)
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -315,15 +324,15 @@ class Client:
             if self.audio_sender_queue:
                 # print('queue size:', self.audio_sender_queue.qsize())
 
-                if self.audio_sender_queue.empty():  # Check if the queue is empty
-                    await asyncio.sleep(1)
-                    # print('queue empty and audio_array length',len(audio_array))
-                    # numpy_track.add_silence=True
-                    print('queue empty --> append silence at the end of array and audio_array length =',numpy_track.audio_array.shape)
-                    # audio_array = np.append(audio_array, np.zeros(16000))
-                    # print('appended silence: ', np.zeros(44100))
+                if not self.audio_sender_queue.empty():  # Check if the queue is empty
+                #     await asyncio.sleep(1)
+                #     # print('queue empty and audio_array length',len(audio_array))
+                #     # numpy_track.add_silence=True
+                #     print('queue empty --> append silence at the end of array and audio_array length =',numpy_track.audio_array.shape)
+                #     # audio_array = np.append(audio_array, np.zeros(16000))
+                #     # print('appended silence: ', np.zeros(44100))
 
-                else:
+                # else:
                     
                     self.audio_array = await self.audio_sender_queue.get()
 
