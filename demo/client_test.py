@@ -63,7 +63,7 @@ async def run(client_id):
     }
 
     try:
-        response = requests.post("http://localhost:8082/offer", data=sdp_offer)
+        response = requests.post("http://localhost:8027/offer", data=sdp_offer)
         if response.status_code == 200:
             answer = response.json()
             answer_desc = RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])

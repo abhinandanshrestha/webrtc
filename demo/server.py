@@ -345,9 +345,10 @@ class Client:
                 if not self.asr_queue.empty():  # Check if the queue is empty
                     print('audiobytes added to asr queue')
 
-                    audio_bytes = await self.audio_sender_queue.get() # Get data from the queue
+                    audio_bytes = await self.asr_queue.get() # Get data from the queue
                     self.asr_queue.task_done()
 
+                    print(audio_bytes)
                     # Prepare the multipart/form-data payload
                     files = {
                         'audio_array': audio_bytes
@@ -582,7 +583,7 @@ if __name__ == "__main__":
         "--host", default="0.0.0.0", help="Host for HTTP server (default: 0.0.0.0)"
     )
     parser.add_argument(
-        "--port", type=int, default=8082, help="Port for HTTP server (default: 8080)"
+        "--port", type=int, default=8027, help="Port for HTTP server (default: 8080)"
     )
     parser.add_argument("--record-to", help="Write received media to a file.")
     parser.add_argument("--verbose", "-v", action="count")
