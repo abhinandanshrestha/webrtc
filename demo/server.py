@@ -452,6 +452,7 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
             asyncio.ensure_future(client.start_recorder(recorder))
             asyncio.ensure_future(client.read_buffer_chunks())
             asyncio.ensure_future(client.read_vad_dictionary())
+            asyncio.ensure_future(client.asr())
             
             # Start coroutine to handle interrupts
             # for example: if audio is streaming back to client and client speaks in the middle, replaceTrack(AudioStreamTrack()) with silence
