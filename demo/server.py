@@ -25,6 +25,8 @@ import av
 import time
 from fractions import Fraction
 import gc
+import math, wave
+import requests
 
 
 ROOT = os.path.dirname(__file__)
@@ -72,7 +74,9 @@ CHUNK_SAMPLES = 512
 CHANNELS = 2
 BIT_DEPTH = 2
 CHUNK_SIZE = int(CHUNK_SAMPLES * CHANNELS * BIT_DEPTH * (ORIG_SAMPLE/ SAMPLE_RATE)) # amt of bytes per chunk
-SILENCE_SAMPLES = SAMPLE_RATE * SILENCE_TIME
+# SILENCE_SAMPLES = SAMPLE_RATE * SILENCE_TIME
+SILENCE_SAMPLES = ORIG_SAMPLE*SILENCE_TIME
+SILENCE_CHUNKS = math.ceil(SILENCE_SAMPLES/(CHUNK_SAMPLES*BIT_DEPTH*CHANNELS))
 
 resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SAMPLE_RATE)
 resample_back= torchaudio.transforms.Resample(orig_freq = SAMPLE_RATE, new_freq = ORIG_SAMPLE)
@@ -171,19 +175,25 @@ class Client:
         self.client_id = client_id # uuid - client_id for different clients
         self.buffer_lock=asyncio.Lock() # asyncio lock to prevent Race Condition for audio_buffer (data member)
         self.audio_buffer = io.BytesIO() # streamed audio is recorded into BytesIO objects by start_recorder co-routine
-        self.speech_audio=torch.tensor([]) # tensor that holds speech inside VAD co-routine
-        self.silence_audio=torch.tensor([]) # tensor that holds silence inside VAD co-routine
+
+        self.vad_dictionary = {} # a dictionary containing {'chunk': isSpeech (1/0) }
+        # self.speech_audio=torch.tensor([]) # tensor that holds speech inside VAD co-routine
+        # self.silence_audio=torch.tensor([]) # tensor that holds silence inside VAD co-routine
         self.speech_threshold=0.0 # Initial speech_threshold that will be modified by Adaptive Thresholding inside VAD co-routine
         self.prob_data = [] # List of probability of speeches that is used inside VAD co-routine
         self.silence_found = False # Flag to indicate that 2 seconds of silence is found inside VAD co-routine
-        self.n = 0 
-        self.voiced_chunk_count = 0 # Number of voiced_chunks to count to implement interrupts
-        self.interruption = False # Flag to indicate that interruption has occurred inside VAD co-routine i.e, CLient is speaking during streaming
+
+        # self.n = 0 
+        # self.voiced_chunk_count = 0 # Number of voiced_chunks to count to implement interrupts
+        # self.interruption = False # Flag to indicate that interruption has occurred inside VAD co-routine i.e, CLient is speaking during streaming
         self.m = 0 # Counter of Interruption
+
+        self.asr_queue=asyncio.Queue()
+
         self.audio_sender_queue = asyncio.Queue() # A Queue where TTS co-routine will push audio_array
         self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
-
+        
 
     # A Co-routine that starts recording audio_butes into audio_buffer
     async def start_recorder(self, recorder): 
@@ -202,7 +212,7 @@ class Client:
                 if size>=CHUNK_SIZE:
                     self.audio_buffer.seek(0, io.SEEK_SET)
                     chunk = self.audio_buffer.read(CHUNK_SIZE)
-
+                    
                     # Implement VAD in this chunk
                     asyncio.ensure_future(self.VAD(chunk))
 
@@ -216,7 +226,7 @@ class Client:
     # When 'silence_audio' is SILENCE_TIME long (2 seconds), it will pass the speech 
     # to 'client_speech', and pop from 'client_audio'.
     async def VAD(self, chunk, threshold_weight = 0.9):
-
+        # print(self.vad_dictionary)
         # To convert from BytesAudio to PyTorch tensor, first convert
         # from BytesAudio to np_chunk and normalize to [-1,1] range.
         # Then mean from the number of CHANNELS of audio to single
@@ -233,54 +243,58 @@ class Client:
         self.speech_prob = model(chunk_audio, SAMPLE_RATE).item()
         self.prob_data.append(self.speech_prob)
         
-        if self.interruption:
-            self.m += 1
+        # if self.interruption:
+        #     self.m += 1
         
-        if not self.silence_found:
-            if self.speech_prob >= self.speech_threshold:
-                # Add chunk to the speech tensor and clear the silence tensor
-                self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
-                self.silence_audio = torch.empty(0)
-                self.voiced_chunk_count += 1
+        # if not self.silence_found:
+        if self.speech_prob >= self.speech_threshold:
+            # Add chunk to the speech tensor and clear the silence tensor
+            # self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
+            # self.silence_audio = torch.empty(0)
+            # self.voiced_chunk_count += 1
 
-            else:
+            self.vad_dictionary[chunk]=1
+
+        else:
+            self.vad_dictionary[chunk]=0
+
                 # Add chunk to both silence tensor and speech tensor
-                self.silence_audio = torch.cat((self.silence_audio, chunk_audio), dim=0)
-                self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
+                # self.silence_audio = torch.cat((self.silence_audio, chunk_audio), dim=0)
+                # self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
                 # If the silence is longer than the SILENCE_TIME (2 sec)
                 # save outputSpeech and add path to
                 # client_audiosender_buffer where send_audio_back will
                 # use the path to play it.
 
-                if self.silence_audio.shape[0] >= SILENCE_SAMPLES:
-                    # silence_found=True
-                    # TEMPORARY: saving the speech into outputSpeech.wav
-                    speech_unsq = torch.unsqueeze(self.speech_audio, dim=0)
-                    # torchaudio.save("outputSpeech_"+client_id+str(n)+".wav", speech_unsq, SAMPLE_RATE)
-                    # np.savetxt('speech_unsq'+str(n)+'.txt', speech_unsq.numpy())
-                    # print(f" Saved at outputSpeech_"+client_id+str(n)+".wav")
+                # if self.silence_audio.shape[0] >= SILENCE_SAMPLES:
+                    # # silence_found=True
+                    # # TEMPORARY: saving the speech into outputSpeech.wav
+                    # speech_unsq = torch.unsqueeze(self.speech_audio, dim=0)
+                    # # torchaudio.save("outputSpeech_"+client_id+str(n)+".wav", speech_unsq, SAMPLE_RATE)
+                    # # np.savetxt('speech_unsq'+str(n)+'.txt', speech_unsq.numpy())
+                    # # print(f" Saved at outputSpeech_"+client_id+str(n)+".wav")
 
-                    # print(speech_unsq.numpy())
-                    await self.audio_sender_queue.put(resample_back(speech_unsq).numpy()) # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                    # # print(speech_unsq.numpy())
+                    # await self.audio_sender_queue.put(resample_back(speech_unsq).numpy()) # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
                     
-                    # client_audiosender_buffer[client_id].append("outputSpeech_ead0cdc4-b0a2-49fb-b532-8bf4e464fc550.wav")
-                    # print("voiced chunk count", voiced_chunk_count)
+                    # # client_audiosender_buffer[client_id].append("outputSpeech_ead0cdc4-b0a2-49fb-b532-8bf4e464fc550.wav")
+                    # # print("voiced chunk count", voiced_chunk_count)
 
-                    # save speech data into client_speech
-                    # client_speech[client_id] = speech_unsq.numpy()
-                    self.speech_audio = torch.empty(0)
-                    self.silence_audio = torch.empty(0)
-                    self.voiced_chunk_count = 0
-                    self.silence_found = True
-                    self.n+=1
-        else:
-            if self.speech_prob >= self.speech_threshold:
-
-                # Reset silence_found to False and start accumulating new speech
-                self.silence_found = False
-                self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
-                self.silence_audio = torch.empty(0)
-                self.voiced_chunk_count += 1
+                    # # save speech data into client_speech
+                    # # client_speech[client_id] = speech_unsq.numpy()
+                    # self.speech_audio = torch.empty(0)
+                    # self.silence_audio = torch.empty(0)
+                    # self.voiced_chunk_count = 0
+                    # self.silence_found = True
+                    # self.n+=1
+        # else:
+        #     if self.speech_prob >= self.speech_threshold:
+                
+        #         # Reset silence_found to False and start accumulating new speech
+        #         self.silence_found = False
+        #         self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
+        #         self.silence_audio = torch.empty(0)
+        #         self.voiced_chunk_count += 1
 
         # Adaptive thresholding which should allow for silence at the beginning
         # of audio and adapt to differing confidence levels of the VAD model.
@@ -288,13 +302,60 @@ class Client:
         # https://vocal.com/voice-quality-enhancement/voice-activity-detection-with-adaptive-thresholding/
         self.speech_threshold = threshold_weight * max([i**2 for i in self.prob_data]) + (1 - threshold_weight) * min([i**2 for i in self.prob_data])
 
-    # async def asr():
+    async def read_vad_dictionary(self):
+        c=0
+        while True:
+            await asyncio.sleep(0.01)  # adjust the sleep time based on your requirements
+            # print('in read_vad_dictionary',self.vad_dictionary)
+            # check if there's number of chunks in vad_dictionary with all consecutive silence chunks then pop the chunks samples
+            if not self.silence_found:
+                if self.vad_dictionary and all(i==0 for i in list(self.vad_dictionary.values())[- SILENCE_CHUNKS:]):
+                    
+                    popped_chunks=list(self.vad_dictionary.keys())[:]
+                    print('popped chunks',len(popped_chunks))
+                    audio_bytes=b''.join(popped_chunks)
+                    for i in popped_chunks:
+                        del self.vad_dictionary[i]
+                    
+                    # Save the audio bytes as a .wav file
+                    with wave.open('myaudio'+str(c)+'.wav', 'wb') as wf:
+                        wf.setnchannels(2)  # Assuming mono audio
+                        wf.setsampwidth(2)  # Assuming 16-bit audio
+                        wf.setframerate(48000)  # Assuming a sample rate of 16kHz
+                        wf.writeframes(audio_bytes)
+                    
+                    await self.asr_queue.put(audio_bytes)
 
-    #     while True:
-    #         await asyncio.sleep(0.01)
+                    c+=1
+                    self.silence_found=True
 
-    #         if asr_queue and asr_queue[client_id]:
-    #             print('text extracted from speech')
+            else:
+                if self.vad_dictionary and list(self.vad_dictionary.values())[-1]==1:
+                    self.silence_found=False
+
+                # break
+    async def asr(self):
+
+        asr_base_url='http://fs.wiseyak.com:8057/transcribe'
+
+        while True:
+            await asyncio.sleep(0.01)
+
+            if self.asr_queue:
+                if not self.asr_queue.empty():  # Check if the queue is empty
+                    print('audiobytes added to asr queue')
+
+                    audio_bytes = await self.audio_sender_queue.get() # Get data from the queue
+                    self.asr_queue.task_done()
+
+                    # Prepare the multipart/form-data payload
+                    files = {
+                        'audio_array': audio_bytes
+                            # ('audio.wav', audio_bytes, 'audio/wav')
+                    }
+
+                    response = requests.post(asr_base_url, files=files) # get response from the endpoint
+                    print(response)
 
 
     # async def llm():
@@ -390,10 +451,11 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
             # asyncio.ensure_future(recorder.start())
             asyncio.ensure_future(client.start_recorder(recorder))
             asyncio.ensure_future(client.read_buffer_chunks())
-
+            asyncio.ensure_future(client.read_vad_dictionary())
+            
             # Start coroutine to handle interrupts
             # for example: if audio is streaming back to client and client speaks in the middle, replaceTrack(AudioStreamTrack()) with silence
-            asyncio.ensure_future(client.send_audio_back(audio_sender))
+            # asyncio.ensure_future(client.send_audio_back(audio_sender))
 
             # pc.addTrack(AudioStreamTrack())
             
@@ -519,7 +581,7 @@ if __name__ == "__main__":
         "--host", default="0.0.0.0", help="Host for HTTP server (default: 0.0.0.0)"
     )
     parser.add_argument(
-        "--port", type=int, default=8080, help="Port for HTTP server (default: 8080)"
+        "--port", type=int, default=8082, help="Port for HTTP server (default: 8080)"
     )
     parser.add_argument("--record-to", help="Write received media to a file.")
     parser.add_argument("--verbose", "-v", action="count")
