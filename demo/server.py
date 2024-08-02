@@ -189,10 +189,14 @@ class Client:
         self.m = 0 # Counter of Interruption
 
         self.asr_queue=asyncio.Queue()
-
+        self.llm_queue=asyncio.Queue()
+        self.tts_queue=asyncio.Queue()
         self.audio_sender_queue = asyncio.Queue() # A Queue where TTS co-routine will push audio_array
+
         self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
+
+
         
 
     # A Co-routine that starts recording audio_butes into audio_buffer
@@ -336,7 +340,8 @@ class Client:
                 # break
     async def asr(self):
 
-        asr_base_url='http://fs.wiseyak.com:8057/transcribe'
+        asr_base_url='http://fs.wiseyak.com:8057/transcribe_array'
+        sample_rate=48000
 
         while True:
             await asyncio.sleep(0.01)
@@ -348,31 +353,55 @@ class Client:
                     audio_bytes = await self.asr_queue.get() # Get data from the queue
                     self.asr_queue.task_done()
 
-                    print(audio_bytes)
-                    # Prepare the multipart/form-data payload
+                    # Create the payload
                     files = {
-                        'audio_array': audio_bytes
-                            # ('audio.wav', audio_bytes, 'audio/wav')
+                        'audio_array': ('audio.bin', audio_bytes, 'application/octet-stream')
+                    }
+                    data = {
+                        'sample_rate': sample_rate
                     }
 
-                    response = requests.post(asr_base_url, files=files) # get response from the endpoint
-                    print(response)
+                    print("Sending asr request: ")
+                    response = requests.post(asr_base_url, files=files, data=data) # get response from the endpoint
+
+                    asr_output_text=response.json()
+                    await self.llm_queue.put(asr_output_text)
 
 
-    # async def llm():
+    # async def llm(self):
+    #     llm_base_url=''
+
     #     while True:
     #         await asyncio.sleep(0.01)
 
-    #         if llm_queue and llm_queue[client_id]:
-    #             print('got response from llm')
+    #         if self.llm_queue and not self.llm_queue.empty():
+                
+    #             llm_input = await self.llm_queue.get() # Get data from the queue
+    #             self.llm_queue.task_done()
 
-    # async def tts():
+    #             response = requests.post(llm_base_url, data={'llm_input':llm_input}) # get response from the endpoint
+    #             llm_output=response.json()
+
+    #             await self.tts_queue.put(llm_output)
+    #             # print('got response from llm')
+
+    # async def tts(self):
+    #     tts_base_url =''
+
     #     while True:
     #         await asyncio.sleep(0.01)
 
-    #         if tts_queue and tts_queue[client_id]:
+    #         if self.tts_queue and not self.tts_queue.empty():
+    
+    #             tts_input = await self.tts_queue.get() # Get data from the queue
+    #             self.tts_queue.task_done()
+
+    #             response = requests.post(tts_base_url, data={'tts_input':tts_input}) # get response from the
+    #             audio_array=response
+                
     #             print('text converted to audio')
-    #             print('push audio array to audio_sender_queue')
+    #             await self.audio_sender_queue.put(audio_array)
+    #             print('pushed audio array to audio_sender_queue')
 
     # Audio_sender co-routine that should handle all the audio_streaming part
     # This should include if audio_path is available in the client_audiosender_buffer
