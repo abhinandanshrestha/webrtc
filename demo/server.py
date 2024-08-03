@@ -318,15 +318,16 @@ class Client:
                     popped_chunks=list(self.vad_dictionary.keys())[:]
                     print('popped chunks',len(popped_chunks))
                     audio_bytes=b''.join(popped_chunks)
+
                     for i in popped_chunks:
                         del self.vad_dictionary[i]
                     
-                    # Save the audio bytes as a .wav file
-                    with wave.open('myaudio'+str(c)+'.wav', 'wb') as wf:
-                        wf.setnchannels(2)  # Assuming mono audio
-                        wf.setsampwidth(2)  # Assuming 16-bit audio
-                        wf.setframerate(48000)  # Assuming a sample rate of 16kHz
-                        wf.writeframes(audio_bytes)
+                    # # Save the audio bytes as a .wav file
+                    # with wave.open('myaudio'+str(c)+'.wav', 'wb') as wf:
+                    #     wf.setnchannels(2)  # Assuming mono audio
+                    #     wf.setsampwidth(2)  # Assuming 16-bit audio
+                    #     wf.setframerate(48000)  # Assuming a sample rate of 16kHz
+                    #     wf.writeframes(audio_bytes)
                     
                     await self.asr_queue.put(audio_bytes)
 
@@ -340,8 +341,7 @@ class Client:
                 # break
     async def asr(self):
 
-        asr_base_url='http://fs.wiseyak.com:8057/transcribe_array'
-        sample_rate=48000
+        asr_base_url='http://fs.wiseyak.com:8029/transcribe_abhi'
 
         while True:
             await asyncio.sleep(0.01)
@@ -352,20 +352,23 @@ class Client:
 
                     audio_bytes = await self.asr_queue.get() # Get data from the queue
                     self.asr_queue.task_done()
-
-                    # Create the payload
+                    
+                    # Prepare for POST request
                     files = {
-                        'audio_array': ('audio.bin', audio_bytes, 'application/octet-stream')
-                    }
-                    data = {
-                        'sample_rate': sample_rate
+                        "audio_file": ("audio.wav", audio_bytes, "audio/wav")
                     }
 
-                    print("Sending asr request: ")
-                    response = requests.post(asr_base_url, files=files, data=data) # get response from the endpoint
+                    # # Send the POST request
+                    # files = {
+                    #     "audio": ("audio.wav", audio_bytes, "audio/wav")
+                    # }
+
+                    response = requests.post(asr_base_url, files=files)
+
 
                     asr_output_text=response.json()
-                    await self.llm_queue.put(asr_output_text)
+                    print(asr_output_text)
+                    # await self.llm_queue.put(asr_output_text)
 
 
     # async def llm(self):
