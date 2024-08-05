@@ -43,18 +43,18 @@ app.add_middleware(
         allow_headers=["*"],
 )
 
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    async with aiofiles.open(os.path.join(ROOT, "index.html"), "r") as f:
-        content = await f.read()
-    return HTMLResponse(content=content)
+# @app.get("/", response_class=HTMLResponse)
+# async def index():
+#     async with aiofiles.open(os.path.join(ROOT, "index.html"), "r") as f:
+#         content = await f.read()
+#     return HTMLResponse(content=content)
 
 
-@app.get("/client.js", response_class=HTMLResponse)
-async def javascript():
-    async with aiofiles.open(os.path.join(ROOT, "client.js"), "r") as f:
-        content = await f.read()
-    return HTMLResponse(content=content)
+# @app.get("/client.js", response_class=HTMLResponse)
+# async def javascript():
+#     async with aiofiles.open(os.path.join(ROOT, "client.js"), "r") as f:
+#         content = await f.read()
+#     return HTMLResponse(content=content)
 
 
 clients={} # set of client instances that can be cleanedup once the client disconnects
@@ -70,13 +70,19 @@ model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
 SAMPLE_RATE = 16000
 ORIG_SAMPLE = 48000
 SILENCE_TIME = 2 # seconds
+REMINDER_TIME = 6 # seconds
+DISCONNECT_TIME = 4 # seconds
 CHUNK_SAMPLES = 512
 CHANNELS = 2
 BIT_DEPTH = 2
 CHUNK_SIZE = int(CHUNK_SAMPLES * CHANNELS * BIT_DEPTH * (ORIG_SAMPLE/ SAMPLE_RATE)) # amt of bytes per chunk
+
 # SILENCE_SAMPLES = SAMPLE_RATE * SILENCE_TIME
-SILENCE_SAMPLES = ORIG_SAMPLE*SILENCE_TIME
+SILENCE_SAMPLES = ORIG_SAMPLE * SILENCE_TIME
 SILENCE_CHUNKS = math.ceil(SILENCE_SAMPLES/(CHUNK_SAMPLES*BIT_DEPTH*CHANNELS))
+
+REMINDER_SAMPLES = ORIG_SAMPLE * REMINDER_TIME 
+REMINDER_CHUNKS=math.ceil(REMINDER_SAMPLES/CHUNK_SIZE)
 
 resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SAMPLE_RATE)
 resample_back= torchaudio.transforms.Resample(orig_freq = SAMPLE_RATE, new_freq = ORIG_SAMPLE)
@@ -113,6 +119,7 @@ class NumpyAudioStreamTrack(MediaStreamTrack):
         self._start = None  # Track the start time
         self._timestamp = 0  # Track the elapsed samples
         self.frame_index = 0  # Track the current frame index
+        # self.remaining_audio_array_length_to_stream = len(audio_array)  # Initialize remaining length of the array
 
     async def recv(self):
 
@@ -132,13 +139,16 @@ class NumpyAudioStreamTrack(MediaStreamTrack):
         # Get the audio data for the current frame
         data = self.audio_array[start_index:end_index]
 
+        # Decrease the remaining length
+        # self.remaining_audio_array_length_to_stream -= len(data)
+
         # Update the frame index for the next read
         self.frame_index += 1
 
         # Reshape the array to be 2D: (number of frames, number of channels)
         data = data.reshape(-1, self.channels)
 
-        # Convert float64 data to int16
+        # Convert float32 data to int16
         if data.dtype == np.float64:
             # Normalize and convert to int16
             data = np.clip(data, -1.0, 1.0)  # Ensure values are in the range [-1.0, 1.0]
@@ -167,10 +177,10 @@ class NumpyAudioStreamTrack(MediaStreamTrack):
         return frame
 
 class Client:
-    '''
-        For Managing Co-routines and Readability, we'll use different co-routines as member functions of Client
-
-    '''
+    """
+        To manage Co-routines for each client, we'll use different co-routines as member functions of Client,
+        and shared data of different co-routines will be our data members.
+    """
     def __init__(self, client_id):
         self.client_id = client_id # uuid - client_id for different clients
         self.buffer_lock=asyncio.Lock() # asyncio lock to prevent Race Condition for audio_buffer (data member)
@@ -184,7 +194,7 @@ class Client:
         self.silence_found = False # Flag to indicate that 2 seconds of silence is found inside VAD co-routine
 
         # self.n = 0 
-        # self.voiced_chunk_count = 0 # Number of voiced_chunks to count to implement interrupts
+        self.voiced_chunk_count = 0 # Number of voiced_chunks to count to implement interrupts
         # self.interruption = False # Flag to indicate that interruption has occurred inside VAD co-routine i.e, CLient is speaking during streaming
         self.m = 0 # Counter of Interruption
 
@@ -195,9 +205,10 @@ class Client:
 
         self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
-
-
+        self.out_stream_status=False
         
+        self.played_reminder=False # Flag to indicate that reminder-audio has to be played
+        self.silence_count=0 # Counter that counts number of chunks 
 
     # A Co-routine that starts recording audio_butes into audio_buffer
     async def start_recorder(self, recorder): 
@@ -241,8 +252,9 @@ class Client:
         np_chunk = np_chunk.reshape(-1, CHANNELS).mean(axis = 1)
         # print(np_chunk.shape)
         chunk_audio = torch.from_numpy(np_chunk)
+        # print(chunk_audio.shape)
         chunk_audio = resample(chunk_audio)
-
+        # print(chunk_audio.shape)
         # Find prob of speech for using silero-vad model
         self.speech_prob = model(chunk_audio, SAMPLE_RATE).item()
         self.prob_data.append(self.speech_prob)
@@ -255,13 +267,15 @@ class Client:
             # Add chunk to the speech tensor and clear the silence tensor
             # self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
             # self.silence_audio = torch.empty(0)
-            # self.voiced_chunk_count += 1
-
+            self.voiced_chunk_count += 1
+            self.silence_count=0
             self.vad_dictionary[chunk]=1
 
+            # print('added voice chunk')
         else:
             self.vad_dictionary[chunk]=0
-
+            self.silence_count+=1
+            # print('detected silence chunk')
                 # Add chunk to both silence tensor and speech tensor
                 # self.silence_audio = torch.cat((self.silence_audio, chunk_audio), dim=0)
                 # self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
@@ -307,7 +321,9 @@ class Client:
         self.speech_threshold = threshold_weight * max([i**2 for i in self.prob_data]) + (1 - threshold_weight) * min([i**2 for i in self.prob_data])
 
     async def read_vad_dictionary(self):
-        c=0
+        
+        c=0 # counter for saving audio chunks as file temporarily
+
         while True:
             await asyncio.sleep(0.01)  # adjust the sleep time based on your requirements
             # print('in read_vad_dictionary',self.vad_dictionary)
@@ -316,19 +332,24 @@ class Client:
                 if self.vad_dictionary and all(i==0 for i in list(self.vad_dictionary.values())[- SILENCE_CHUNKS:]):
                     
                     popped_chunks=list(self.vad_dictionary.keys())[:]
+
+                    # # Filter out silence chunks before joining chunks to get only chunks that has audio
+                    # audio_chunks = [k for k, v in self.vad_dictionary.items() if v != 0]
+                    
                     print('popped chunks',len(popped_chunks))
                     audio_bytes=b''.join(popped_chunks)
 
                     for i in popped_chunks:
                         del self.vad_dictionary[i]
                     
-                    # # Save the audio bytes as a .wav file
+                    # Save the audio bytes as a .wav file to test if VAD is working correctly
                     # with wave.open('myaudio'+str(c)+'.wav', 'wb') as wf:
                     #     wf.setnchannels(2)  # Assuming mono audio
                     #     wf.setsampwidth(2)  # Assuming 16-bit audio
                     #     wf.setframerate(48000)  # Assuming a sample rate of 16kHz
                     #     wf.writeframes(audio_bytes)
                     
+                    self.voiced_chunk_count=0
                     await self.asr_queue.put(audio_bytes)
 
                     c+=1
@@ -336,6 +357,7 @@ class Client:
 
             else:
                 if self.vad_dictionary and list(self.vad_dictionary.values())[-1]==1:
+                    print("Detected Voice")
                     self.silence_found=False
 
                 # break
@@ -368,54 +390,68 @@ class Client:
 
                     asr_output_text=response.json()
                     print(asr_output_text)
-                    # await self.llm_queue.put(asr_output_text)
+                    await self.llm_queue.put(asr_output_text)
 
 
-    # async def llm(self):
-    #     llm_base_url=''
+    async def llm(self):
+        # llm_base_url=''
 
-    #     while True:
-    #         await asyncio.sleep(0.01)
+        while True:
+            await asyncio.sleep(0.01)
 
-    #         if self.llm_queue and not self.llm_queue.empty():
+            if self.llm_queue and not self.llm_queue.empty():
                 
-    #             llm_input = await self.llm_queue.get() # Get data from the queue
-    #             self.llm_queue.task_done()
+                llm_input = await self.llm_queue.get() # Get data from the queue
+                self.llm_queue.task_done()
 
-    #             response = requests.post(llm_base_url, data={'llm_input':llm_input}) # get response from the endpoint
-    #             llm_output=response.json()
+                # response = requests.post(llm_base_url, data={'llm_input':llm_input}) # get response from the endpoint
+                # llm_output=response.json()
+                llm_output='send to tts'
+                print('output of llm:',llm_output)
+                await self.tts_queue.put(llm_output)
+                # print('got response from llm')
 
-    #             await self.tts_queue.put(llm_output)
-    #             # print('got response from llm')
+    async def tts(self):
+        # tts_base_url =''
 
-    # async def tts(self):
-    #     tts_base_url =''
+        while True:
+            await asyncio.sleep(0.01)
 
-    #     while True:
-    #         await asyncio.sleep(0.01)
+            if self.tts_queue and not self.tts_queue.empty():
+                print("tts queue has new item")
+                tts_input = await self.tts_queue.get() # Get data from the queue
+                self.tts_queue.task_done()
 
-    #         if self.tts_queue and not self.tts_queue.empty():
-    
-    #             tts_input = await self.tts_queue.get() # Get data from the queue
-    #             self.tts_queue.task_done()
+                # response = requests.post(tts_base_url, data={'tts_input':tts_input}) # get response from the
+                # audio_array=response
+                with wave.open("../demo/tts-output-1.wav", 'rb') as wav_file:
+                    num_frames = wav_file.getnframes()
+                    audio_data = wav_file.readframes(num_frames)
 
-    #             response = requests.post(tts_base_url, data={'tts_input':tts_input}) # get response from the
-    #             audio_array=response
+                np_array=np.frombuffer(audio_data,dtype=np.int16)
+                np_array=np_array.astype(np.float32) /32768.0
+                audio_tensor = torch.from_numpy(np_array)
+                audio_data = torchaudio.functional.resample(audio_tensor, 22050, 48000)
+                # Step 4: Convert mono tensor to stereo by duplicating the channel
+                stereo_tensor = torch.stack([audio_data, audio_data], dim=0)
+
+                audio_array=stereo_tensor.numpy()
                 
-    #             print('text converted to audio')
-    #             await self.audio_sender_queue.put(audio_array)
-    #             print('pushed audio array to audio_sender_queue')
+                print('text converted to audio')
+                await self.audio_sender_queue.put(audio_array)
+                print('pushed audio array to audio_sender_queue')
 
     # Audio_sender co-routine that should handle all the audio_streaming part
     # This should include if audio_path is available in the client_audiosender_buffer
     # # This should also include if client speaks while streaming, it should interrupt  
-    async def send_audio_back(self, audio_sender):
+    async def send_audio_back(self, audio_sender, client_id,pc):
 
         numpy_track=NumpyAudioStreamTrack(np.zeros(48000), add_silence=True)
 
         while True:
             await asyncio.sleep(0.01)
             if self.audio_sender_queue:
+                # print(self.audio_sender_queue.qsize())
                 # print('queue size:', self.audio_sender_queue.qsize())
 
                 if not self.audio_sender_queue.empty():  # Check if the queue is empty
@@ -427,12 +463,12 @@ class Client:
                 #     # print('appended silence: ', np.zeros(44100))
 
                 # else:
-                    
+                    print('audio_sender_queue has new item')
                     self.audio_array = await self.audio_sender_queue.get()
-
+                    self.out_stream_status=True
                     # print(audio_array, audio_array.shape)
                     numpy_track=NumpyAudioStreamTrack(self.audio_array, add_silence=True)
-                        
+                    print('ReplacedTrack')    
                     # numpy_track.audio_array=audio_array
                     # numpy_track.add_silence=False
                     self.replace_track=True
@@ -441,11 +477,49 @@ class Client:
                     self.audio_sender_queue.task_done()  # Indicate that the item has been consumed from the queue
                     # print('queue size:', self.audio_sender_queue.qsize())
                     
+                    # Save the audio bytes as a .wav file
+                    # with wave.open('original_audio.wav', 'wb') as wf:
+                    #     wf.setnchannels(2)  # Assuming mono audio
+                    #     wf.setsampwidth(2)  # Assuming 16-bit audio
+                    #     wf.setframerate(48000)  # Assuming a sample rate of 16kHz
+                    #     wf.writeframes(self.audio_buffer.getvalue())
+
                 if self.replace_track:
                     # print(audio_array)
                     # numpy_track=NumpyAudioStreamTrack(audio_array)
                     audio_sender.replaceTrack(numpy_track)
                     self.replace_track=False
+
+            # To Handle Interrupt
+            if self.voiced_chunk_count >= 5 and self.out_stream_status==True:
+                print(self.voiced_chunk_count)
+                print("Detected interruption --> Stream Silence")
+                audio_sender.replaceTrack(AudioStreamTrack())
+                self.out_stream_status=False
+            
+            # To Handle Reminder that Client hasn't spoken for 6 seconds before we disconnect client 
+            # if not self.played_reminder and self.silence_count>=REMINDER_CHUNKS:
+            #     print("Play Reminder audio")
+                
+            #     with wave.open("../demo/warning.wav", 'rb') as wav_file:
+            #         num_frames = wav_file.getnframes()
+            #         audio_data = wav_file.readframes(num_frames)
+
+            #     np_array=np.frombuffer(audio_data,dtype=np.int16)
+            #     reminder_track=NumpyAudioStreamTrack(np_array, add_silence=True)
+            #     audio_sender.replaceTrack(reminder_track)
+                
+            #     self.played_reminder=True
+
+                # await asyncio.sleep(4)
+                # # if all(i==0 for i in list(self.vad_dictionary.values())[- CALL_DISCONNECT_CHUNKS:]):
+                # print("Disconnect Client")
+                # clients.pop(client_id, None)  # Remove the client from the clients dictionary
+                # print(client_id,' removed')
+                # pcs.discard(pc)  # Remove the pc from the set of peer connections
+
+                # await pc.close()
+
 
 # endpoint to accept offer from webrtc client for handshaking
 @app.post("/offer")
@@ -486,6 +560,9 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
             asyncio.ensure_future(client.read_buffer_chunks())
             asyncio.ensure_future(client.read_vad_dictionary())
             asyncio.ensure_future(client.asr())
+            asyncio.ensure_future(client.llm())
+            asyncio.ensure_future(client.tts())
+            asyncio.ensure_future(client.send_audio_back(audio_sender, client_id, pc))
             
             # Start coroutine to handle interrupts
             # for example: if audio is streaming back to client and client speaks in the middle, replaceTrack(AudioStreamTrack()) with silence
