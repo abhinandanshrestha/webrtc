@@ -82,7 +82,10 @@ SILENCE_SAMPLES = ORIG_SAMPLE * SILENCE_TIME
 SILENCE_CHUNKS = math.ceil(SILENCE_SAMPLES/(CHUNK_SAMPLES*BIT_DEPTH*CHANNELS))
 
 REMINDER_SAMPLES = ORIG_SAMPLE * REMINDER_TIME 
-REMINDER_CHUNKS=math.ceil(REMINDER_SAMPLES/CHUNK_SIZE)
+REMINDER_CHUNKS=math.ceil(REMINDER_SAMPLES/(CHUNK_SAMPLES*BIT_DEPTH*CHANNELS))
+
+DISCONNECT_SAMPLES = ORIG_SAMPLE * DISCONNECT_TIME 
+DISCONNECT_CHUNKS=math.ceil(REMINDER_SAMPLES/(CHUNK_SAMPLES*BIT_DEPTH*CHANNELS))
 
 resample = torchaudio.transforms.Resample(orig_freq = ORIG_SAMPLE, new_freq = SAMPLE_RATE)
 resample_back= torchaudio.transforms.Resample(orig_freq = SAMPLE_RATE, new_freq = ORIG_SAMPLE)
@@ -146,7 +149,8 @@ class NumpyAudioStreamTrack(MediaStreamTrack):
         self.frame_index += 1
 
         # Reshape the array to be 2D: (number of frames, number of channels)
-        data = data.reshape(-1, self.channels)
+        # data = data.reshape(-1, self.channels)
+        data = data.reshape(-1, 1)
 
         # Convert float32 data to int16
         if data.dtype == np.float64:
@@ -498,28 +502,31 @@ class Client:
                 self.out_stream_status=False
             
             # To Handle Reminder that Client hasn't spoken for 6 seconds before we disconnect client 
-            # if not self.played_reminder and self.silence_count>=REMINDER_CHUNKS:
-            #     print("Play Reminder audio")
+            if not self.played_reminder and self.silence_count>=REMINDER_CHUNKS:
+                print("Play Reminder audio")
                 
-            #     with wave.open("../demo/warning.wav", 'rb') as wav_file:
-            #         num_frames = wav_file.getnframes()
-            #         audio_data = wav_file.readframes(num_frames)
+                with wave.open("../demo/warning.wav", 'rb') as wav_file:
+                    num_frames = wav_file.getnframes()
+                    audio_data = wav_file.readframes(num_frames)
 
-            #     np_array=np.frombuffer(audio_data,dtype=np.int16)
-            #     reminder_track=NumpyAudioStreamTrack(np_array, add_silence=True)
-            #     audio_sender.replaceTrack(reminder_track)
+                np_array=np.frombuffer(audio_data, dtype=np.int16)
+                np_array=np_array.astype(np.float32) /32768.0
+                numpy_track=NumpyAudioStreamTrack(np_array, add_silence=True)
+                # reminder_track=BytesIOAudioStreamTrack(io.BytesIO(audio_data))
+                audio_sender.replaceTrack(numpy_track)
                 
-            #     self.played_reminder=True
+                self.played_reminder=True
 
-                # await asyncio.sleep(4)
-                # # if all(i==0 for i in list(self.vad_dictionary.values())[- CALL_DISCONNECT_CHUNKS:]):
-                # print("Disconnect Client")
-                # clients.pop(client_id, None)  # Remove the client from the clients dictionary
-                # print(client_id,' removed')
-                # pcs.discard(pc)  # Remove the pc from the set of peer connections
-
-                # await pc.close()
-
+            if self.played_reminder:
+                if self.silence_count>=(REMINDER_CHUNKS+DISCONNECT_CHUNKS):
+                    print("Disconnect Client")
+                    clients.pop(client_id, None) 
+                    pcs.discard(pc)  # Remove the pc from the set of peer connections
+                    await pc.close()
+                    break
+                if self.voiced_chunk_count>0:
+                    self.played_reminder=False
+                
 
 # endpoint to accept offer from webrtc client for handshaking
 @app.post("/offer")
