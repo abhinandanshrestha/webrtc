@@ -349,7 +349,7 @@ class Client:
                     #     wf.setframerate(48000)  # Assuming a sample rate of 16kHz
                     #     wf.writeframes(audio_bytes)
                     
-                    self.logs['VADoutput'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.logs['VADoutput'+str(uuid.uuid4())]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     self.voiced_chunk_count=0
                     await self.asr_queue.put(audio_bytes)
@@ -414,7 +414,7 @@ class Client:
                 llm_output='send to tts'
                 print('output of llm:',llm_output)
 
-                self.logs['LLMOutput '+uuid.UUID()+':'+llm_output]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.logs['LLMOutput '+str(uuid.uuid4())+':'+llm_output]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 await self.tts_queue.put(llm_output)
                 # print('got response from llm')
@@ -447,7 +447,7 @@ class Client:
                 
                 print('text converted to audio')
 
-                self.logs['TTSOutput'+uuid.UUID()+'.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.logs['TTSOutput'+str(uuid.uuid4())+'.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 await self.audio_sender_queue.put(audio_array)
                 print('pushed audio array to audio_sender_queue')
@@ -500,7 +500,7 @@ class Client:
                     # numpy_track=NumpyAudioStreamTrack(audio_array)
                     audio_sender.replaceTrack(numpy_track)
 
-                    self.logs['Streaming speech'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.logs['Streaming speech'+str(uuid.uuid4())]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     self.replace_track=False
 
@@ -510,7 +510,7 @@ class Client:
                 print("Detected interruption --> Stream Silence")
                 audio_sender.replaceTrack(AudioStreamTrack())
 
-                self.logs['Interrupt detected Streaming silence'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.logs['Interrupt detected Streaming silence'+str(uuid.uuid4())]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 self.out_stream_status=False
             
@@ -527,7 +527,7 @@ class Client:
                 numpy_track=NumpyAudioStreamTrack(np_array, add_silence=True)
                 # reminder_track=BytesIOAudioStreamTrack(io.BytesIO(audio_data))
                 audio_sender.replaceTrack(numpy_track)
-                self.logs['Play Reminder Audio'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.logs['Play Reminder Audio'+str(uuid.uuid4())]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 self.played_reminder=True
 
@@ -538,9 +538,10 @@ class Client:
                     pcs.discard(pc)  # Remove the pc from the set of peer connections
                     await pc.close()
 
-                    self.logs['Disconnected'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.logs['Disconnected'+str(uuid.uuid4())]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     break
+
                 if self.voiced_chunk_count>0:
                     self.played_reminder=False
                 
