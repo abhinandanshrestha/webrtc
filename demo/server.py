@@ -365,7 +365,7 @@ class Client:
                 # break
     async def asr(self):
 
-        asr_base_url='http://fs.wiseyak.com:8029/transcribe_abhi'
+        asr_base_url='http://fs.wiseyak.com:8028/transcribe_abhi'
 
         while True:
             await asyncio.sleep(0.01)
