@@ -6,6 +6,12 @@ from aiortc.contrib.media import MediaPlayer, MediaRecorder
 import logging
 import sys
 import uuid
+import pyaudio
+
+# PyAudio configuration
+FORMAT = pyaudio.paInt16  # Adjust this based on the audio format
+CHANNELS = 2  # Stereo
+RATE = 48000  # Adjust this based on the audio sample rate
 
 # logging.basicConfig(level=logging.DEBUG)
 async def run(client_id):
@@ -16,12 +22,15 @@ async def run(client_id):
     config = RTCConfiguration(iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")])
     pc = RTCPeerConnection(configuration=config)
 
-    # recorder=MediaRecorder('abhindan-test.wav')
+    recorder=MediaRecorder('receivedFromServer-test'+client_id+'.wav')
 
     channel = pc.createDataChannel("chat")
 
     # Add audio track to the peer connection
-    player=MediaPlayer('../audiotest.wav')
+    # player=MediaPlayer('../audiotest.wav')
+    # player=MediaPlayer('./10sec_silence.wav')
+    player=MediaPlayer('./10sec_silence.wav')
+
     track=player.audio
     pc.addTrack(track)
     # audio_sender=pc.getSenders()[0]
@@ -35,19 +44,46 @@ async def run(client_id):
     def on_message(message):
         print(f"Received via RTC Datachannel for client {client_id}: ", message)
 
-    # @pc.on("track")
-    # async def on_track(track):
-    #     print('Hello Abhinandan')
-    #     print(f"Track{track.kind} received. Make sure .start() is called to start recording")
+    @pc.on("track")
+    async def on_track(track):
+        print('Hello Abhinandan')
+        print(f"Track{track.kind} received. Make sure .start() is called to start recording")
 
-    #     if track.kind == "audio":
-    #         recorder.addTrack(track)
-    #         await recorder.start() # start recording to buffer named audio_buffer
+        if track.kind == "audio":
+            # recorder.addTrack(track)
+            # await recorder.start() # start recording to buffer named audio_buffer
+
+            # asyncio.ensure_future(play_audio(track))
+            audio = pyaudio.PyAudio()
+            stream = audio.open(format=FORMAT,
+                                channels=CHANNELS,
+                                rate=RATE,
+                                output=True)
             
-    #     @track.on("ended")
-    #     async def on_ended():
-    #         print("Track %s ended", track.kind)
-    #         await recorder.stop()
+            while True:
+                # await asyncio.sleep(0.1)
+                frame=await track.recv()
+                if frame:
+                    audio_data=frame.to_ndarray().tobytes()
+                    stream.write(audio_data)
+            
+        @track.on("ended")
+        async def on_ended():
+            print("Track %s ended", track.kind)
+            await recorder.stop()
+
+    # async def play_audio(track):
+    #     audio = pyaudio.PyAudio()
+    #     stream = audio.open(format=FORMAT,
+    #                         channels=CHANNELS,
+    #                         rate=RATE,
+    #                         output=True)
+        
+    #     while True:
+    #         frame=await track.recv()
+    #         if frame:
+    #             audio_data=frame.to_ndarray().tobytes()
+    #             stream.write(audio_data)
 
     # silenceTrack=AudioStreamTrack()
 
@@ -63,7 +99,7 @@ async def run(client_id):
     }
 
     try:
-        response = requests.post("http://localhost:8027/offer", data=sdp_offer)
+        response = requests.post("http://localhost:8002/offer", data=sdp_offer)
         if response.status_code == 200:
             answer = response.json()
             answer_desc = RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])

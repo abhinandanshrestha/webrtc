@@ -27,7 +27,7 @@ from fractions import Fraction
 import gc
 import math, wave
 import requests
-
+from datetime import datetime
 
 ROOT = os.path.dirname(__file__)
 
@@ -43,19 +43,12 @@ app.add_middleware(
         allow_headers=["*"],
 )
 
-# @app.get("/", response_class=HTMLResponse)
-# async def index():
-#     async with aiofiles.open(os.path.join(ROOT, "index.html"), "r") as f:
-#         content = await f.read()
-#     return HTMLResponse(content=content)
-
-
-# @app.get("/client.js", response_class=HTMLResponse)
-# async def javascript():
-#     async with aiofiles.open(os.path.join(ROOT, "client.js"), "r") as f:
-#         content = await f.read()
-#     return HTMLResponse(content=content)
-
+@app.get("/")
+async def index():
+    return {
+        "clients":list(clients.keys()),
+        "client_logs":[{ client.client_id : client.logs}  for client in list(clients.values())]
+    }
 
 clients={} # set of client instances that can be cleanedup once the client disconnects
 
@@ -123,6 +116,8 @@ class NumpyAudioStreamTrack(MediaStreamTrack):
         self._timestamp = 0  # Track the elapsed samples
         self.frame_index = 0  # Track the current frame index
         # self.remaining_audio_array_length_to_stream = len(audio_array)  # Initialize remaining length of the array
+
+        self.logs={} # Speech and timestamp
 
     async def recv(self):
 
@@ -199,6 +194,7 @@ class Client:
 
         # self.n = 0 
         self.voiced_chunk_count = 0 # Number of voiced_chunks to count to implement interrupts
+        self.silence_count=0 # Counter that counts number of silence chunks 
         # self.interruption = False # Flag to indicate that interruption has occurred inside VAD co-routine i.e, CLient is speaking during streaming
         self.m = 0 # Counter of Interruption
 
@@ -209,10 +205,10 @@ class Client:
 
         self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
-        self.out_stream_status=False
+        self.out_stream_status=False # Flag to indicate that server is streaming 
         
         self.played_reminder=False # Flag to indicate that reminder-audio has to be played
-        self.silence_count=0 # Counter that counts number of chunks 
+        self.logs={}
 
     # A Co-routine that starts recording audio_butes into audio_buffer
     async def start_recorder(self, recorder): 
@@ -353,6 +349,8 @@ class Client:
                     #     wf.setframerate(48000)  # Assuming a sample rate of 16kHz
                     #     wf.writeframes(audio_bytes)
                     
+                    self.logs['VADoutput'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                     self.voiced_chunk_count=0
                     await self.asr_queue.put(audio_bytes)
 
@@ -394,6 +392,9 @@ class Client:
 
                     asr_output_text=response.json()
                     print(asr_output_text)
+
+                    self.logs['ASROutput: '+asr_output_text]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                     await self.llm_queue.put(asr_output_text)
 
 
@@ -412,6 +413,9 @@ class Client:
                 # llm_output=response.json()
                 llm_output='send to tts'
                 print('output of llm:',llm_output)
+
+                self.logs['LLMOutput '+uuid.UUID()+':'+llm_output]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                 await self.tts_queue.put(llm_output)
                 # print('got response from llm')
 
@@ -442,6 +446,9 @@ class Client:
                 audio_array=stereo_tensor.numpy()
                 
                 print('text converted to audio')
+
+                self.logs['TTSOutput'+uuid.UUID()+'.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                 await self.audio_sender_queue.put(audio_array)
                 print('pushed audio array to audio_sender_queue')
 
@@ -492,6 +499,9 @@ class Client:
                     # print(audio_array)
                     # numpy_track=NumpyAudioStreamTrack(audio_array)
                     audio_sender.replaceTrack(numpy_track)
+
+                    self.logs['Streaming speech'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                     self.replace_track=False
 
             # To Handle Interrupt
@@ -499,6 +509,9 @@ class Client:
                 print(self.voiced_chunk_count)
                 print("Detected interruption --> Stream Silence")
                 audio_sender.replaceTrack(AudioStreamTrack())
+
+                self.logs['Interrupt detected Streaming silence'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                 self.out_stream_status=False
             
             # To Handle Reminder that Client hasn't spoken for 6 seconds before we disconnect client 
@@ -514,6 +527,7 @@ class Client:
                 numpy_track=NumpyAudioStreamTrack(np_array, add_silence=True)
                 # reminder_track=BytesIOAudioStreamTrack(io.BytesIO(audio_data))
                 audio_sender.replaceTrack(numpy_track)
+                self.logs['Play Reminder Audio'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 self.played_reminder=True
 
@@ -523,6 +537,9 @@ class Client:
                     clients.pop(client_id, None) 
                     pcs.discard(pc)  # Remove the pc from the set of peer connections
                     await pc.close()
+
+                    self.logs['Disconnected'+uuid.UUID()]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                     break
                 if self.voiced_chunk_count>0:
                     self.played_reminder=False
