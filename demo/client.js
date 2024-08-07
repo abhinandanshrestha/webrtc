@@ -49,6 +49,7 @@ function createPeerConnection() {
 function enumerateInputDevices() {
     const populateSelect = (select, devices) => {
         let counter = 1;
+        console.log(devices);
         devices.forEach((device) => {
             const option = document.createElement('option');
             option.value = device.deviceId;
@@ -115,7 +116,12 @@ function negotiate() {
         formData.append('type', offer.type);
         formData.append('client_id', client_id);
 
-        return fetch('http://localhost:8080/offer', {
+        // return fetch('http://localhost:8002/offer', {
+        //     body: formData,
+        //     method: 'POST'
+        // });
+
+        return fetch('http://113.199.192.49:8027/offer', {
             body: formData,
             method: 'POST'
         });
