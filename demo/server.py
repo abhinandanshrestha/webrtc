@@ -576,10 +576,22 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     @pc.on("track")
     def on_track(track: MediaStreamTrack):
         print(f"Track {track.kind} received. Make sure to use .start() to start recording to buffer")
+
+        with wave.open("./welcome.wav", 'rb') as wav_file:
+            num_frames = wav_file.getnframes()
+            audio_data = wav_file.readframes(num_frames)
+
+        np_array=np.frombuffer(audio_data,dtype=np.int16)
+        np_array=np_array.astype(np.float32) /32768.0
+        audio_tensor = torch.from_numpy(np_array)
+        audio_data = torchaudio.functional.resample(audio_tensor, 22050, 48000)
+        stereo_tensor = torch.stack([audio_data, audio_data], dim=0)
+        audio_array=stereo_tensor.numpy()
+
         if track.kind == "audio":
             recorder.addTrack(track)
             # audio_sender=pc.addTrack(MediaPlayer('./serverToClient.wav').audio)
-            audio_sender=pc.addTrack(AudioStreamTrack())
+            audio_sender=pc.addTrack(NumpyAudioStreamTrack(audio_array,add_silence=True))
             # asyncio.ensure_future(recorder.start())
             asyncio.ensure_future(client.start_recorder(recorder))
             asyncio.ensure_future(client.read_buffer_chunks())
