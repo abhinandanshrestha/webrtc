@@ -116,15 +116,15 @@ function negotiate() {
         formData.append('type', offer.type);
         formData.append('client_id', client_id);
 
-        // return fetch('http://localhost:8002/offer', {
-        //     body: formData,
-        //     method: 'POST'
-        // });
-
-        return fetch('http://113.199.192.49:8027/offer', {
+        return fetch('http://localhost:8002/offer', {
             body: formData,
             method: 'POST'
         });
+
+        // return fetch('http://113.199.192.49:8027/offer', {
+        //     body: formData,
+        //     method: 'POST'
+        // });
 
     }).then((response) => {
         return response.json();

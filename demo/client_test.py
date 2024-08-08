@@ -29,10 +29,13 @@ async def run(client_id):
     # Add audio track to the peer connection
     # player=MediaPlayer('../audiotest.wav')
     # player=MediaPlayer('./10sec_silence.wav')
-    player=MediaPlayer('./10sec_silence.wav')
+    # player=MediaPlayer('./10sec_silence.wav')
 
-    track=player.audio
-    pc.addTrack(track)
+    # track=player.audio
+    # pc.addTrack(track)
+    pc.addTrack(MediaPlayer("audio=Microphone Array (Realtek(R) Audio)",format="dshow").audio)
+    # pc.addTrack(MediaPlayer("audio=Microphone (Steam Streaming Microphone)",format="dshow").audio)
+
     # audio_sender=pc.getSenders()[0]
 
     @channel.on("open")
@@ -50,6 +53,7 @@ async def run(client_id):
         print(f"Track{track.kind} received. Make sure .start() is called to start recording")
 
         if track.kind == "audio":
+            print('start speaking')
             # recorder.addTrack(track)
             # await recorder.start() # start recording to buffer named audio_buffer
 
@@ -64,6 +68,7 @@ async def run(client_id):
                 # await asyncio.sleep(0.1)
                 frame=await track.recv()
                 if frame:
+                    # print(frame)
                     audio_data=frame.to_ndarray().tobytes()
                     stream.write(audio_data)
             
@@ -100,6 +105,9 @@ async def run(client_id):
 
     try:
         response = requests.post("http://localhost:8002/offer", data=sdp_offer)
+        
+        # response = requests.post("http://fs.wiseyak.com:8027/offer", data=sdp_offer)
+
         if response.status_code == 200:
             answer = response.json()
             answer_desc = RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])

@@ -382,14 +382,14 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
 
     # event handler for tracks (audio/video)
     @pc.on("track")
-    async def on_track(track: MediaStreamTrack):
+    def on_track(track: MediaStreamTrack):
         print(f"Track {track.kind} received. Make sure to use .start() to start recording to buffer")
         
         if track.kind == "audio":
             recorder.addTrack(track)
             pc.addTrack(track)
 
-            await recorder.start()
+            # await recorder.start()
             # audio_sender=pc.addTrack(MediaPlayer('./serverToClient.wav').audio)
             # audio_sender=pc.addTrack(AudioStreamTrack())
             # asyncio.ensure_future(recorder.start())

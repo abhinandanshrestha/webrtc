@@ -56,6 +56,39 @@ class BufferMediaRecorder(MediaRecorder):
         self.__tracks = {} 
         super().__init__(buffer, format=format) 
 
+class BytesIOAudioStreamTrack(MediaStreamTrack):
+    kind = "audio"
+
+    def __init__(self, audio_buffer):
+        super().__init__()  # Initialize the base MediaStreamTrack class
+        self.audio_buffer = audio_buffer
+        self.audio_buffer.seek(0)
+        self.wave_file = wave.open(self.audio_buffer, 'rb')
+        self.sample_rate = self.wave_file.getframerate()
+        self.channels = self.wave_file.getnchannels()
+        self.samples_per_frame = 960  # This depends on your desired frame duration (e.g., 20ms for 48kHz audio)
+        self.frame_duration = self.samples_per_frame / self.sample_rate
+        self.pts = 0  # Initialize PTS counter
+
+    async def recv(self):
+        frames = self.wave_file.readframes(self.samples_per_frame)
+        data=np.frombuffer(frames, dtype=np.int16)
+        # print(data)
+        if len(data) == 0:
+            print('empty')
+
+        frame = av.AudioFrame.from_ndarray(
+            data.reshape(1,-1),
+            format="s16",
+            layout="stereo" if self.channels == 2 else "mono"
+        )
+        frame.sample_rate = self.sample_rate
+        frame.time_base = Fraction(1, self.sample_rate)  # Set the time base for accurate timestamping
+        frame.pts = self.pts  # Set the PTS for the frame
+        self.pts += self.samples_per_frame  # Increment PTS counter by the number of samples in the frame
+
+        return frame
+
 class NumpyAudioStreamTrack(MediaStreamTrack):
     """
     Custom class that inherits from MediaStreamTrack and reads
@@ -64,7 +97,7 @@ class NumpyAudioStreamTrack(MediaStreamTrack):
 
     kind = "audio"
 
-    def __init__(self, audio_array, add_silence=False, sample_rate=48000, channels=1, samples_per_frame=960):
+    def __init__(self, audio_array, add_silence=False, sample_rate=48000, channels=2, samples_per_frame=960):
         super().__init__()  # Initialize the MediaStreamTrack base class
         self.audio_array = audio_array
         self.add_silence = add_silence
@@ -152,6 +185,7 @@ class Client:
         self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
 
+        self.chunk_append=b'' # an array that holds speech instead of using torch 
 
     # A Co-routine that starts recording audio_butes into audio_buffer
     async def start_recorder(self, recorder): 
@@ -184,14 +218,14 @@ class Client:
     # When 'silence_audio' is SILENCE_TIME long (2 seconds), it will pass the speech 
     # to 'client_speech', and pop from 'client_audio'.
     async def VAD(self, chunk, threshold_weight = 0.9):
-
         # To convert from BytesAudio to PyTorch tensor, first convert
         # from BytesAudio to np_chunk and normalize to [-1,1] range.
         # Then mean from the number of CHANNELS of audio to single
         # channel audio, convert to PyTorch tensor, and resample from
         # 44100 Hz to 16000 Hz audio
-        np_chunk = np.frombuffer(chunk, dtype = np.int16)
-        np_chunk = np_chunk.astype(np.float32) / 32768.0
+
+        np_chunk_orig = np.frombuffer(chunk, dtype = np.int16)
+        np_chunk = np_chunk_orig.astype(np.float32) / 32768.0
         np_chunk = np_chunk.reshape(-1, CHANNELS).mean(axis = 1)
         # print(np_chunk.shape)
         chunk_audio = torch.from_numpy(np_chunk)
@@ -207,11 +241,13 @@ class Client:
         if not self.silence_found:
             if self.speech_prob >= self.speech_threshold:
                 # Add chunk to the speech tensor and clear the silence tensor
+                self.chunk_append += chunk 
                 self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
                 self.silence_audio = torch.empty(0)
                 self.voiced_chunk_count += 1
 
             else:
+                self.chunk_append += chunk 
                 # Add chunk to both silence tensor and speech tensor
                 self.silence_audio = torch.cat((self.silence_audio, chunk_audio), dim=0)
                 self.speech_audio = torch.cat((self.speech_audio, chunk_audio), dim=0)
@@ -223,19 +259,36 @@ class Client:
                 if self.silence_audio.shape[0] >= SILENCE_SAMPLES:
                     # silence_found=True
                     # TEMPORARY: saving the speech into outputSpeech.wav
-                    speech_unsq = torch.unsqueeze(self.speech_audio, dim=0)
-                    # torchaudio.save("outputSpeech_"+client_id+str(n)+".wav", speech_unsq, SAMPLE_RATE)
+                    # speech_unsq = torch.unsqueeze(self.speech_audio, dim=0)
+
+                    # speech_resampled = resample_back(speech_unsq)
+                
+                    # # Convert back to stereo by duplicating the mono channel
+                    # stereo_audio = torch.cat([speech_resampled, speech_resampled], dim=0)
+
+                    # torchaudio.save(f"outputSpeech_{self.client_id}{self.n}.wav", stereo_audio, ORIG_SAMPLE)
+
+                    # torchaudio.save("outputSpeech_"+self.client_id+str(self.n)+".wav", resample_back(speech_unsq), ORIG_SAMPLE)
                     # np.savetxt('speech_unsq'+str(n)+'.txt', speech_unsq.numpy())
                     # print(f" Saved at outputSpeech_"+client_id+str(n)+".wav")
 
                     # print(speech_unsq.numpy())
-                    await self.audio_sender_queue.put(resample_back(speech_unsq).numpy()) # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
+                    numpy_audio=np.frombuffer(self.chunk_append, dtype=np.int16)
+                    with wave.open('output_audio.wav', 'wb') as wf:
+                        # Set the parameters for the WAV file
+                        wf.setnchannels(2)  # Number of audio channels
+                        wf.setsampwidth(2)  # Sample width in bytes
+                        wf.setframerate(48000)  # Sample rate
+                        wf.writeframes(self.chunk_append)  # Write the audio data
+
+                    await self.audio_sender_queue.put(np.frombuffer(self.chunk_append, dtype=np.int16)) # push to client_audiosender_buffer which will be read continuously by audio_sender couroutine
                     
                     # client_audiosender_buffer[client_id].append("outputSpeech_ead0cdc4-b0a2-49fb-b532-8bf4e464fc550.wav")
                     # print("voiced chunk count", voiced_chunk_count)
 
                     # save speech data into client_speech
                     # client_speech[client_id] = speech_unsq.numpy()
+                    self.chunk_append = b''
                     self.speech_audio = torch.empty(0)
                     self.silence_audio = torch.empty(0)
                     self.voiced_chunk_count = 0
@@ -425,7 +478,7 @@ def getClients():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="localhost", port=8081) # Increase the number of workers as needed and limit_max_requests
+    uvicorn.run(app, host="localhost", port=8080) # Increase the number of workers as needed and limit_max_requests
 
 
 # class NumpyAudioStreamTrack(MediaStreamTrack):

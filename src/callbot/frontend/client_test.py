@@ -27,7 +27,7 @@ async def run(client_id):
     channel = pc.createDataChannel("chat")
 
     # Add audio track to the peer connection
-    # player=MediaPlayer('../audiotest.wav')
+    # player=MediaPlayer('../audios/audiotest.wav')
     # player=MediaPlayer('./10sec_silence.wav')
     # player=MediaPlayer('./10sec_silence.wav')
 

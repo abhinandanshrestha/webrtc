@@ -67,7 +67,7 @@ async def run(client_id):
 
     # If we want to stream directly from the Microphone, we can simply pass "audio= <Microphone device name and ffmpeg compatible format>" to MediaPlayer
     # # Capture audio from the audiofile and stream for now
-    player = MediaPlayer('test-audios/8.wav')
+    player = MediaPlayer('test-audios/6.wav')
     # player = MediaPlayer('audiotest.wav')
     audio_track = player.audio
 
@@ -85,7 +85,7 @@ async def run(client_id):
     }
 
     try:
-        response = requests.post("http://localhost:8081/offer", data=sdp_offer)
+        response = requests.post("http://localhost:8080/offer", data=sdp_offer)
         # print(response)
         if response.status_code == 200:
             answer = response.json()
