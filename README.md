@@ -40,9 +40,12 @@ Then:
 
 	pip install -r requirements.txt
 
+	cd src/callbot
 	python server.py 
+	python server.py --port <port>
 
-	python client.py <client_id> # client_id can be anything; the program creates a random number for this client.
+	cd frontend
+	python client_test.py <client_id> # client_id can be anything; the program creates a random number for this client.
 >
 <!-- > After Recording has been completed, run: python answerer.py -->
 >
