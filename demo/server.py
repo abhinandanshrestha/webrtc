@@ -29,6 +29,17 @@ import math, wave
 import requests
 from datetime import datetime
 
+with wave.open("./welcome_shuvani.wav", 'rb') as wav_file:
+    num_frames = wav_file.getnframes()
+    audio_data = wav_file.readframes(num_frames)
+
+welcome_array=np.frombuffer(audio_data,dtype=np.int16)
+welcome_array=welcome_array.astype(np.float32) /32768.0
+welcome_tensor = torch.from_numpy(welcome_array)
+welcome_data = torchaudio.functional.resample(welcome_tensor, 22050, 48000)
+stereo_welcome = torch.stack([welcome_data, welcome_data], dim=0)
+welcome_array=stereo_welcome.numpy()
+
 ROOT = os.path.dirname(__file__)
 
 logger = logging.getLogger("pc")
@@ -63,7 +74,7 @@ model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
 SAMPLE_RATE = 16000
 ORIG_SAMPLE = 48000
 SILENCE_TIME = 2 # seconds
-REMINDER_TIME = 6 # seconds
+REMINDER_TIME = 12 # seconds
 DISCONNECT_TIME = 4 # seconds
 CHUNK_SAMPLES = 512
 CHANNELS = 2
@@ -218,7 +229,7 @@ class Client:
     # A co-routine that reads chunks from the audio_buffer where server is writing audio_bytes continuously into
     async def read_buffer_chunks(self):
         while True:
-            await asyncio.sleep(0.01)  # adjust the sleep time based on your requirements
+            await asyncio.sleep(0.0001)  # adjust the sleep time based on your requirements
             async with self.buffer_lock:
                 
                 self.audio_buffer.seek(0, io.SEEK_END) # seek to end of audio
@@ -227,7 +238,7 @@ class Client:
                 if size>=CHUNK_SIZE:
                     self.audio_buffer.seek(0, io.SEEK_SET)
                     chunk = self.audio_buffer.read(CHUNK_SIZE)
-                    
+                    # print(len(chunk))
                     # Implement VAD in this chunk
                     asyncio.ensure_future(self.VAD(chunk))
 
@@ -256,6 +267,7 @@ class Client:
         chunk_audio = resample(chunk_audio)
         # print(chunk_audio.shape)
         # Find prob of speech for using silero-vad model
+
         self.speech_prob = model(chunk_audio, SAMPLE_RATE).item()
         self.prob_data.append(self.speech_prob)
         
@@ -325,7 +337,7 @@ class Client:
         c=0 # counter for saving audio chunks as file temporarily
 
         while True:
-            await asyncio.sleep(0.01)  # adjust the sleep time based on your requirements
+            await asyncio.sleep(0.0001)  # adjust the sleep time based on your requirements
             # print('in read_vad_dictionary',self.vad_dictionary)
             # check if there's number of chunks in vad_dictionary with all consecutive silence chunks then pop the chunks samples
             if not self.silence_found:
@@ -365,10 +377,10 @@ class Client:
                 # break
     async def asr(self):
 
-        asr_base_url='http://fs.wiseyak.com:8028/transcribe_abhi'
+        asr_base_url='http://192.168.88.10:8028/transcribe_abhi'
 
         while True:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.0001)
 
             if self.asr_queue:
                 if not self.asr_queue.empty():  # Check if the queue is empty
@@ -389,7 +401,6 @@ class Client:
 
                     response = requests.post(asr_base_url, files=files)
 
-
                     asr_output_text=response.json()
                     print(asr_output_text)
 
@@ -402,7 +413,7 @@ class Client:
         # llm_base_url=''
 
         while True:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.0001)
 
             if self.llm_queue and not self.llm_queue.empty():
                 
@@ -423,7 +434,7 @@ class Client:
         # tts_base_url =''
 
         while True:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.0001)
 
             if self.tts_queue and not self.tts_queue.empty():
                 print("tts queue has new item")
@@ -432,7 +443,7 @@ class Client:
 
                 # response = requests.post(tts_base_url, data={'tts_input':tts_input}) # get response from the
                 # audio_array=response
-                with wave.open("../demo/tts-output-1.wav", 'rb') as wav_file:
+                with wave.open("./tts-output-1.wav", 'rb') as wav_file:
                     num_frames = wav_file.getnframes()
                     audio_data = wav_file.readframes(num_frames)
 
@@ -457,10 +468,11 @@ class Client:
     # # This should also include if client speaks while streaming, it should interrupt  
     async def send_audio_back(self, audio_sender, client_id,pc):
 
-        numpy_track=NumpyAudioStreamTrack(np.zeros(48000), add_silence=True)
+        # numpy_track=NumpyAudioStreamTrack(np.zeros(48000), add_silence=True)
+        numpy_track=NumpyAudioStreamTrack(welcome_array, add_silence=True)
 
         while True:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.0001)
             if self.audio_sender_queue:
                 # print(self.audio_sender_queue.qsize())
                 # print('queue size:', self.audio_sender_queue.qsize())
@@ -518,7 +530,7 @@ class Client:
             if not self.played_reminder and self.silence_count>=REMINDER_CHUNKS:
                 print("Play Reminder audio")
                 
-                with wave.open("../demo/warning.wav", 'rb') as wav_file:
+                with wave.open("./warning.wav", 'rb') as wav_file:
                     num_frames = wav_file.getnframes()
                     audio_data = wav_file.readframes(num_frames)
 
@@ -534,6 +546,11 @@ class Client:
             if self.played_reminder:
                 if self.silence_count>=(REMINDER_CHUNKS+DISCONNECT_CHUNKS):
                     print("Disconnect Client")
+
+                    # Save to a JSON file
+                    with open('logs/'+self.client_id+'.json', 'w') as json_file:
+                        json.dump(self.logs, json_file)
+
                     clients.pop(client_id, None) 
                     pcs.discard(pc)  # Remove the pc from the set of peer connections
                     await pc.close()
@@ -549,7 +566,7 @@ class Client:
 # endpoint to accept offer from webrtc client for handshaking
 @app.post("/offer")
 async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id: str = Form(...)):
-
+    # print(sdp,type,client_id)
     # logging.info(f"Received SDP: {sdp}, type: {type}")
     config = RTCConfiguration(iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]) # make use of google's stun server
     pc = RTCPeerConnection(configuration=config) # pass the config to configuration to make use of stun server
@@ -576,22 +593,12 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
     @pc.on("track")
     def on_track(track: MediaStreamTrack):
         print(f"Track {track.kind} received. Make sure to use .start() to start recording to buffer")
-
-        with wave.open("./welcome.wav", 'rb') as wav_file:
-            num_frames = wav_file.getnframes()
-            audio_data = wav_file.readframes(num_frames)
-
-        np_array=np.frombuffer(audio_data,dtype=np.int16)
-        np_array=np_array.astype(np.float32) /32768.0
-        audio_tensor = torch.from_numpy(np_array)
-        audio_data = torchaudio.functional.resample(audio_tensor, 22050, 48000)
-        stereo_tensor = torch.stack([audio_data, audio_data], dim=0)
-        audio_array=stereo_tensor.numpy()
-
         if track.kind == "audio":
             recorder.addTrack(track)
             # audio_sender=pc.addTrack(MediaPlayer('./serverToClient.wav').audio)
-            audio_sender=pc.addTrack(NumpyAudioStreamTrack(audio_array,add_silence=True))
+            audio_sender=pc.addTrack(AudioStreamTrack())
+            # audio_sender=pc.addTrack(NumpyAudioStreamTrack(welcome_array, add_silence=True))
+            # print(welcome_array)
             # asyncio.ensure_future(recorder.start())
             asyncio.ensure_future(client.start_recorder(recorder))
             asyncio.ensure_future(client.read_buffer_chunks())
@@ -621,6 +628,9 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         if pc.connectionState in ["failed", "closed", "disconnected"]:
             print(f"Connection state is {pc.connectionState}, cleaning up")
             print("Deleting client_id:", client_id)
+
+            with open('logs/'+client_id+'.json', 'w') as json_file:
+                json.dump(client.logs, json_file)
 
             await recorder.stop()
 
