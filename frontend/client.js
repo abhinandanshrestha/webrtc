@@ -39,8 +39,42 @@ function createPeerConnection() {
 
     // Connect audio
     pc.addEventListener('track', (evt) => {
-        if (evt.track.kind == 'audio')
-            document.getElementById('audio').srcObject = evt.streams[0];
+        console.log(evt)
+        if (evt.track.kind == 'audio'){
+            const audioElement = document.getElementById('audio');
+            audioElement.srcObject = evt.streams[0];
+
+            // Initialize MediaRecorder to capture audio
+            const mediaRecorder = new MediaRecorder(evt.streams[0]);
+            const chunks = [];
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    chunks.push(e.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(chunks, { type: 'audio/webm' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = 'received_audio.webm';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+            };
+
+            // Start recording
+            mediaRecorder.start();
+
+            // Stop recording after 30 seconds (or any other condition)
+            setTimeout(() => {
+                mediaRecorder.stop();
+            }, 30000);
+        }
+
     });
 
     return pc;
@@ -116,15 +150,15 @@ function negotiate() {
         formData.append('type', offer.type);
         formData.append('client_id', client_id);
 
-        return fetch('http://localhost:8002/offer', {
-            body: formData,
-            method: 'POST'
-        });
-
-        // return fetch('http://113.199.192.49:8027/offer', {
+        // return fetch('http://localhost:8002/offer', {
         //     body: formData,
         //     method: 'POST'
         // });
+
+        return fetch('http://113.199.192.49:8027/offer', {
+            body: formData,
+            method: 'POST'
+        });
 
     }).then((response) => {
         return response.json();
