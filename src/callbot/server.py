@@ -9,9 +9,9 @@ from fastapi import FastAPI, Form, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer, MediaStreamTrack, AudioStreamTrack
 import gc
-from media_classes import BufferMediaRecorder
+from media_classes import BufferMediaRecorder, NumpyAudioStreamTrack
 from client_handler import Client
-from utils import pcs, clients
+from utils import pcs, clients, state1_array
 
 ROOT = os.path.dirname(__file__)
 
@@ -67,7 +67,8 @@ async def offer_endpoint(sdp: str = Form(...), type: str = Form(...), client_id:
         if track.kind == "audio":
             recorder.addTrack(track)
             # audio_sender=pc.addTrack(MediaPlayer('./serverToClient.wav').audio)
-            audio_sender=pc.addTrack(AudioStreamTrack())
+            # audio_sender=pc.addTrack(AudioStreamTrack())
+            audio_sender=pc.addTrack(NumpyAudioStreamTrack(state1_array, add_silence=True))
             # audio_sender=pc.addTrack(NumpyAudioStreamTrack(welcome_array, add_silence=True))
             # print(welcome_array)
             # asyncio.ensure_future(recorder.start())

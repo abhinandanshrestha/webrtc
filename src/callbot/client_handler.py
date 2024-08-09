@@ -10,7 +10,23 @@ import math, wave
 import requests
 from datetime import datetime
 from media_classes import NumpyAudioStreamTrack
-from utils import pcs, clients, welcome_array, warning_array
+from utils import (pcs, 
+                    clients, 
+                    welcome_array, 
+                    warning_array,
+                    state1_array,
+                    state2_yes_array,
+                    state2_no_array,
+                    state3_yes_array, 
+                    state3_no_array,
+                    state4_yes_array,
+                    state4_no_array,
+                    state5_array) 
+from llm_handler import (get_embedding,
+                         find_similarity,
+                            positive_embeds,
+                            negative_embeds,
+                            repeat_embeds)
 
 # loading model for vad
 model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
@@ -23,7 +39,7 @@ model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
 SAMPLE_RATE = 16000
 ORIG_SAMPLE = 48000
 SILENCE_TIME = 2 # seconds
-REMINDER_TIME = 12 # seconds
+REMINDER_TIME = 20 # seconds
 DISCONNECT_TIME = 4 # seconds
 CHUNK_SAMPLES = 512
 CHANNELS = 2
@@ -72,7 +88,10 @@ class Client:
         self.tts_queue=asyncio.Queue()
         self.audio_sender_queue = asyncio.Queue() # A Queue where TTS co-routine will push audio_array
 
-        self.replace_track=True # Flag to indicate that track has to be replaced inside send_audio_back co-routine
+        self.state=1
+        self.out_state=4
+
+        self.replace_track=False # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=np.array([]) # an array that holds audio that has to be streamed back to the Client
         self.out_stream_status=False # Flag to indicate that server is streaming 
         
@@ -268,24 +287,78 @@ class Client:
 
 
     async def llm(self):
-        # llm_base_url=''
+        # llm_base_url="http://192.168.88.40:8026/embed"
 
         while True:
             await asyncio.sleep(0.0001)
 
             if self.llm_queue and not self.llm_queue.empty():
                 
-                llm_input = await self.llm_queue.get() # Get data from the queue
+                text = await self.llm_queue.get() # Get data from the queue
                 self.llm_queue.task_done()
 
-                # response = requests.post(llm_base_url, data={'llm_input':llm_input}) # get response from the endpoint
-                # llm_output=response.json()
-                llm_output='send to tts'
-                print('output of llm:',llm_output)
+                try:
+                    text_embedding =  get_embedding(text)
+                    print(text_embedding)
+                except:
+                    print('£'*100)
+                    print("Could not get text embedding")
 
-                self.logs['LLMOutput '+str(uuid.uuid4())+':'+llm_output]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # out_state = self.state+1 # Out state increase by 1
 
-                await self.tts_queue.put(llm_output)
+                print("&"*100)
+                print(np.array(text_embedding).shape)
+                print(np.array(positive_embeds[0]).shape)
+                print("&"*100)
+
+                if self.state == 1:
+                    similarity = find_similarity(text_embedding, positive_embeds[self.state-1], negative_embeds[self.state-1],repeat_embeds[0])
+                    if similarity == 0:
+                        response = 'yes'
+                    elif similarity == 1:
+                        response = 'repeat'
+                    else :
+                        response = 'no'
+                
+                elif self.state == 2:
+                    similarity =   find_similarity(text_embedding, positive_embeds[self.state-1], negative_embeds[self.state-1], repeat_embeds[0])
+                    if similarity == 0:
+                        response = 'yes'
+                    elif similarity == 1:
+                        response = 'repeat'
+                    else :
+                        response = 'no'
+                        
+                elif self.state==3:
+                    similarity =   find_similarity(text_embedding, positive_embeds[self.state-1], negative_embeds[self.state-1],repeat_embeds[0])
+                    if similarity == 0:
+                        response = 'yes'
+                    elif similarity == 1:
+                        response = 'repeat'
+                    else :
+                        response = 'no'
+
+                elif self.state==4:
+                    similarity =   find_similarity(text_embedding, positive_embeds[self.state-1], negative_embeds[self.state-1],repeat_embeds[0])
+                    if similarity == 0:
+                        response = 'yes'
+                    elif similarity == 1:
+                        response = 'repeat'
+                    else :
+                        response = 'no'
+                else:
+                    out_state = 4
+                    response = 'no'
+
+                print(response,self.state)
+                # # response = requests.post(llm_base_url, data={'text':text}) # get response from the endpoint
+                # # llm_output=response.json()
+                # llm_output='send to tts'
+                # print('output of llm:',llm_output)
+
+                self.logs['LLMOutput '+str(uuid.uuid4())+':'+response]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                await self.tts_queue.put(response)
                 # print('got response from llm')
 
     async def tts(self):
@@ -296,25 +369,56 @@ class Client:
 
             if self.tts_queue and not self.tts_queue.empty():
                 print("tts queue has new item")
-                tts_input = await self.tts_queue.get() # Get data from the queue
+                llm_output = await self.tts_queue.get() # Get data from the queue
                 self.tts_queue.task_done()
-
-                # response = requests.post(tts_base_url, data={'tts_input':tts_input}) # get response from the
-                # audio_array=response
-                with wave.open("./audios/tts-output-1.wav", 'rb') as wav_file:
-                    num_frames = wav_file.getnframes()
-                    audio_data = wav_file.readframes(num_frames)
-
-                np_array=np.frombuffer(audio_data,dtype=np.int16)
-                np_array=np_array.astype(np.float32) /32768.0
-                audio_tensor = torch.from_numpy(np_array)
-                audio_data = torchaudio.functional.resample(audio_tensor, 22050, 48000)
-                # Step 4: Convert mono tensor to stereo by duplicating the channel
-                stereo_tensor = torch.stack([audio_data, audio_data], dim=0)
-
-                audio_array=stereo_tensor.numpy()
                 
-                print('text converted to audio')
+                # # response = requests.post(tts_base_url, data={'tts_input':tts_input}) # get response from the
+                # # audio_array=response
+                # with wave.open("./audios/tts-output-1.wav", 'rb') as wav_file:
+                #     num_frames = wav_file.getnframes()
+                #     audio_data = wav_file.readframes(num_frames)
+
+                # np_array=np.frombuffer(audio_data,dtype=np.int16)
+                # np_array=np_array.astype(np.float32) /32768.0
+                # audio_tensor = torch.from_numpy(np_array)
+                # audio_data = torchaudio.functional.resample(audio_tensor, 22050, 48000)
+                # # Step 4: Convert mono tensor to stereo by duplicating the channel
+                # stereo_tensor = torch.stack([audio_data, audio_data], dim=0)
+
+                # audio_array=stereo_tensor.numpy()
+
+                if self.state==1:
+                    if llm_output=='yes':
+                        audio_array=state2_yes_array
+                        self.state+=1
+                    elif llm_output=='no':
+                        audio_array=state2_no_array
+                        self.state=self.out_state
+                    elif llm_output=='repeat':
+                        audio_array=state1_array
+                elif self.state==2:
+                    if llm_output=='yes':
+                        audio_array=state3_yes_array
+                        self.state+=1
+                    elif llm_output=='no':
+                        audio_array=state3_no_array
+                        self.state=self.out_state
+                    elif llm_output=='repeat':
+                        audio_array=state2_yes_array
+                elif self.state==3:
+                    if llm_output=='yes':
+                        audio_array=state4_yes_array
+                        self.state+=1
+                    elif llm_output=='no':
+                        audio_array=state4_no_array
+                        self.state=self.out_state
+                    elif llm_output=='repeat':
+                        audio_array=state3_yes_array
+                elif self.state==4:
+                    if llm_output=='yes':
+                        audio_array=state5_array
+                print('text converted to audio',self.state)
+                # print()
 
                 self.logs['TTSOutput'+str(uuid.uuid4())+'.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -326,8 +430,8 @@ class Client:
     # # This should also include if client speaks while streaming, it should interrupt  
     async def send_audio_back(self, audio_sender, client_id,pc):
 
-        # numpy_track=NumpyAudioStreamTrack(np.zeros(48000), add_silence=True)
-        numpy_track=NumpyAudioStreamTrack(welcome_array, add_silence=True)
+        numpy_track=NumpyAudioStreamTrack(np.zeros(48000), add_silence=True)
+        # numpy_track=NumpyAudioStreamTrack(state1_array, add_silence=True)
 
         while True:
             await asyncio.sleep(0.0001)
@@ -415,3 +519,14 @@ class Client:
 
                 if self.voiced_chunk_count>0:
                     self.played_reminder=False
+            
+            if self.state==self.out_state:
+                await asyncio.sleep(7)
+                await pc.close()
+                pcs.discard(pc)
+                clients.pop(client_id, None)
+
+            
+
+
+

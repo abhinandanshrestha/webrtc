@@ -39,6 +39,7 @@ function createPeerConnection() {
 
     // Connect audio
     pc.addEventListener('track', (evt) => {
+        console.log(evt)
         if (evt.track.kind == 'audio')
             document.getElementById('audio').srcObject = evt.streams[0];
     });
@@ -116,7 +117,7 @@ function negotiate() {
         formData.append('type', offer.type);
         formData.append('client_id', client_id);
 
-        return fetch('http://localhost:8002/offer', {
+        return fetch('http://localhost:8027/offer', {
             body: formData,
             method: 'POST'
         });

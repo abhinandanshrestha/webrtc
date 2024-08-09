@@ -26,17 +26,18 @@ async def run(client_id):
 
     channel = pc.createDataChannel("chat")
 
-    # Add audio track to the peer connection
-    player=MediaPlayer('../src/callbot/audios/10.wav')
-    # player=MediaPlayer('./10sec_silence.wav')
-    # player=MediaPlayer('./10sec_silence.wav')
+    # # Add audio track to the peer connection
+    # player=MediaPlayer('../src/callbot/audios/10.wav')
+    # # player=MediaPlayer('./10sec_silence.wav')
+    # # player=MediaPlayer('./10sec_silence.wav')
 
-    track=player.audio
-    pc.addTrack(track)
+    # track=player.audio
+    # pc.addTrack(track)
     # pc.addTrack(MediaPlayer("audio=Microphone Array (Realtek(R) Audio)",format="dshow").audio)
     # pc.addTrack(MediaPlayer("audio=Microphone (Steam Streaming Microphone)",format="dshow").audio)
 
     # audio_sender=pc.getSenders()[0]
+    pc.addTrack(AudioStreamTrack())
 
     @channel.on("open")
     def on_open():
