@@ -33,11 +33,12 @@ async def run(client_id):
 
     # track=player.audio
     # pc.addTrack(track)
-    # pc.addTrack(MediaPlayer("audio=Microphone Array (Realtek(R) Audio)",format="dshow").audio)
+    microphone_track=MediaPlayer("audio=Microphone Array (Realtek(R) Audio)",format="dshow")
+    pc.addTrack(microphone_track.audio)
     # pc.addTrack(MediaPlayer("audio=Microphone (Steam Streaming Microphone)",format="dshow").audio)
 
     # audio_sender=pc.getSenders()[0]
-    pc.addTrack(AudioStreamTrack())
+    # pc.addTrack(AudioStreamTrack())
 
     @channel.on("open")
     def on_open():
@@ -68,6 +69,7 @@ async def run(client_id):
             while True:
                 # await asyncio.sleep(0.1)
                 frame=await track.recv()
+                # frame=await microphone_track.recv()
                 if frame:
                     # print(frame)
                     audio_data=frame.to_ndarray().tobytes()
