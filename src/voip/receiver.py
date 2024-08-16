@@ -22,6 +22,7 @@ def start_voip():
     )
 
     phone.start()
+    phone.call('5000')
     print("Phone started. Status:", phone.get_status())
 
     try:
