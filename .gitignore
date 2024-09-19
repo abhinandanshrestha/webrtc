@@ -6,3 +6,4 @@ myvenv/
 .vscode
 silero-vad/
 .venv
+src/voip/logs
