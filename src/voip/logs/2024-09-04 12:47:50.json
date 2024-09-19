@@ -1,0 +1,15 @@
+{
+    "Silence Found:": "2024-09-04 12:47:45",
+    "ASROutput:  Yeah, this is zone speaking.": "2024-09-04 12:47:29",
+    "LLMOutput: yes": "2024-09-04 12:47:45",
+    "TTS Plays: e2_yes.wav": "2024-09-04 12:47:29",
+    "TTSOutputaf4344d5-6967-4c6e-b0ad-123f2b8beb61.wav": "2024-09-04 12:47:29",
+    "Detected Voice:": "2024-09-04 12:47:43",
+    "ASROutput:  Yeah.": "2024-09-04 12:47:35",
+    "TTS Plays: e3_yes.wav": "2024-09-04 12:47:35",
+    "TTSOutput3a10c040-8869-4a32-85b3-6ebec00762ff.wav": "2024-09-04 12:47:35",
+    "ASROutput:  Yes please.": "2024-09-04 12:47:45",
+    "TTS Plays: e4_yes.wav": "2024-09-04 12:47:45",
+    "TTSOutput5238fe90-f496-4070-8ba9-35ee8338198c.wav": "2024-09-04 12:47:45",
+    "Hangup": "2024-09-04 12:47:50"
+}

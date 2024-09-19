@@ -1,0 +1,22 @@
+{
+    "Silence Found:": "2024-09-17 16:00:03",
+    "ASROutput:  Could you repeat?": "2024-09-17 15:59:16",
+    "LLMOutput: repeat": "2024-09-17 15:59:25",
+    "TTS Plays: isp1.wav": "2024-09-17 15:59:25",
+    "TTSOutputfaa3dc84-2398-4703-abcb-528fe53a4b8b.wav": "2024-09-17 15:59:17",
+    "Detected Voice:": "2024-09-17 16:00:01",
+    "ASROutput:  I can hear you.": "2024-09-17 15:59:25",
+    "TTSOutput679c9345-cbb4-4be5-8fad-ed2ae8bc49a1.wav": "2024-09-17 15:59:25",
+    "ASROutput:  Yes, it's David.": "2024-09-17 15:59:34",
+    "LLMOutput: yes": "2024-09-17 15:59:34",
+    "TTS Plays: isp2_yes.wav": "2024-09-17 15:59:34",
+    "TTSOutputd81be894-ba40-4bb2-a252-f5ea73c98415.wav": "2024-09-17 15:59:34",
+    "ASROutput:  No, I'm not planning to continue.": "2024-09-17 15:59:47",
+    "LLMOutput: no": "2024-09-17 16:00:03",
+    "TTS Plays: isp3_no.wav": "2024-09-17 15:59:47",
+    "TTSOutput5b21d603-a321-47e3-a6e3-dcbf0fe80a45.wav": "2024-09-17 15:59:47",
+    "ASROutput:  No, I'm not interested.": "2024-09-17 16:00:03",
+    "TTS Plays: isp4_no.wav": "2024-09-17 16:00:03",
+    "TTSOutput949d3ffd-a03a-41ef-bdb5-25c1a7538144.wav": "2024-09-17 16:00:03",
+    "Hangup": "2024-09-17 16:00:11"
+}

@@ -11,15 +11,27 @@ import threading
 import requests
 import queue
 from datetime import datetime
-from llm_handler import *
 import scipy.io.wavfile as wav
 from scipy.signal import resample
+import sys, os
 
-# Loading model for VAD
-model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
+# Add the project root directory to sys.path and then import llm_handler from callbot
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from callbot.llm_handler import *
+from dbconn import models
+from dbconn.database import SessionLocal, engine
+import requests
+
+# # Define the URL and parameters
+# calllogs_endpoint_url = 'http://localhost:8001/call_logs/'
+
+# # Loading model for VAD
+model, utils = torch.hub.load(repo_or_dir='/home/oem/webrtc/silero-vad/',
+                              source='local',
                               model='silero_vad',
                               force_reload=True,
                               onnx=False)
+
 
 # Global constants related to the audio input format and chosen chunk values.
 SAMPLE_RATE = 8000
@@ -36,6 +48,11 @@ def convert_8bit_to_16bit(audio_data):
     audio_data = np.frombuffer(audio_data, dtype=np.uint8).astype(np.int16)
     audio_data = (audio_data - 128) * 256  # Scale from 8-bit to 16-bit
     return audio_data.tobytes()
+
+def split_audio_bytes(audio_bytes, sample_rate=8000, sample_width=1):
+    bytes_per_second = sample_rate * sample_width
+    chunks = [audio_bytes[i:i + bytes_per_second] for i in range(0, len(audio_bytes), bytes_per_second)]
+    return chunks
 
 def get_audio_bytes(input_path):
     # Load the audio file
@@ -59,7 +76,8 @@ def get_audio_bytes(input_path):
     
 class CallHandler:
     def __init__(self) -> None:
-        self.chunks_to_skip = 15  # Number of initial chunks to skip
+        self.caller_id=uuid.uuid4()
+        self.chunks_to_skip = SILENCE_CHUNKS + 50 # Number of initial chunks to skip
         self.skipped_chunks = 0
         self.skipped_bytes = 0
         self.speech_threshold = 0.0
@@ -81,33 +99,60 @@ class CallHandler:
         self.replace_track=False # Flag to indicate that track has to be replaced inside send_audio_back co-routine
         self.audio_array=b'' # an array that holds audio that has to be streamed back to the Client
         self.out_stream_status=False # Flag to indicate that server is streaming 
-        
+        self.stream_chunks=[]
+
         self.played_reminder=False # Flag to indicate that reminder-audio has to be played
         self.logs={}
+        # self.caller=False
+
+        self.call_logs_url='http://localhost:8001/call_logs/'
+
+    def call_hangup(self, call):
+        while True:
+            time.sleep(0.0001)
+            if self.state==4:
+                time.sleep(7)
+                        # self.logs['Hangup']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'Call Hangup','event_detail': ''}, headers={'accept': 'application/json'})   
+                call.hangup()
 
     def send_audio_back(self, call):
-
+        
         while True:
             
             time.sleep(0.0001)
             if self.audio_sender_queue:
                 if not self.audio_sender_queue.empty():  # Check if the queue is empty
 
-                    print('audio_sender_queue has new item')
+                    # print('audio_sender_queue has new item')
+                    requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'audio_sender_queue has new item','event_detail': ''}, headers={'accept': 'application/json'})
                     self.audio_array = self.audio_sender_queue.get()
                     self.out_stream_status=True
 
-                    print('ReplacedTrack')    
+                    
+                    requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'replaced track','event_detail': ''}, headers={'accept': 'application/json'})   
                     self.replace_track=True
 
                 if self.replace_track:
-                    
-                    call.write_audio(self.audio_array)
+                    # call.write_audio(self.audio_array)
+                    self.stream_chunks=split_audio_bytes(self.audio_array)
 
-                    self.logs['Streaming speech'+str(uuid.uuid4())]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    for i in self.stream_chunks:
+                        time.sleep(1)
+                        call.write_audio(i)
+
+                        if self.out_stream_status==True and self.voiced_chunk_count>=3:
+                            print(self.voiced_chunk_count)
+                            print("Detected interruption --> Stream Silence")
+                            self.stream_chunks.clear()
+                            self.out_stream_status=False
+                            requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'interrupt detected','event_detail': ''}, headers={'accept': 'application/json'})   
+                            # self.logs['Detected interruption']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     self.replace_track=False
 
+                    # with open('logs/'+datetime.now().strftime("%Y-%m-%d %H:%M:%S")+'.json', 'w', encoding='utf-8') as json_file:
+                    #     json.dump(self.logs, json_file, ensure_ascii=False, indent=4)
             # # To Handle Interrupt
             # if self.voiced_chunk_count >= 5 and self.out_stream_status==True:
             #     print(self.voiced_chunk_count)
@@ -156,43 +201,69 @@ class CallHandler:
             time.sleep(0.0001)
             if self.tts_queue and not self.tts_queue.empty():
                 print("tts queue has new item")
+                requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts queue has new item','event_detail': ''}, headers={'accept': 'application/json'})   
+                    
                 llm_output = self.tts_queue.get() # Get data from the queue
                 
                 if self.state==1:
                     if llm_output=='yes':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_2_yes.wav')
+                        # self.logs['TTS Plays: global_ime_2_yes.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_2_yes.wav'}, headers={'accept': 'application/json'})   
                         self.state+=1
                     elif llm_output=='no':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_2_no.wav')
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_2_no.wav'}, headers={'accept': 'application/json'})
+                        # self.logs['TTS Plays: global_ime_2_no.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         self.state=self.out_state
                     elif llm_output=='repeat':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_1.wav')
+                        # self.logs['TTS Plays: global_ime_1.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_1.wav'}, headers={'accept': 'application/json'})
+                        self.state=1
                 elif self.state==2:
                     if llm_output=='yes':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_3_yes.wav')
+                        # self.logs['TTS Plays: global_ime_3_yes.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_3_yes.wav'}, headers={'accept': 'application/json'})
                         self.state+=1
                     elif llm_output=='no':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_3_no.wav')
+                        # self.logs['TTS Plays: global_ime_3_no.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_3_no.wav'}, headers={'accept': 'application/json'})
                         self.state=self.out_state
                     elif llm_output=='repeat':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_2_yes.wav')
+                        # self.logs['TTS Plays: global_ime_2_yes.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_2_yes.wav'}, headers={'accept': 'application/json'})
+                        self.state=2
                 elif self.state==3:
                     if llm_output=='yes':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_4_yes.wav')
+                        # self.logs['TTS Plays: global_ime_4_yes.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_4_yes.wav'}, headers={'accept': 'application/json'})
                         self.state+=1
                     elif llm_output=='no':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_4_no.wav')
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_4_no.wav'}, headers={'accept': 'application/json'})
+                        # self.logs['TTS Plays: global_ime_4_no.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         self.state=self.out_state
                     elif llm_output=='repeat':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_3_yes.wav')
+                        # self.logs['TTS Plays: global_ime_3_yes.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_3_yes.wav'}, headers={'accept': 'application/json'})
+                        self.state=3
                 elif self.state==4:
                     if llm_output=='yes':
                         audio_array=get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_5_yes.wav')
+                        # self.logs['TTS Plays: global_ime_5_yes.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'tts pushes','event_detail': 'global_ime_5_yes.wav'}, headers={'accept': 'application/json'})
 
                 print('text converted to audio',self.state)
+                requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'TTS pushed audio to audio_sender_queue','event_detail': ''}, headers={'accept': 'application/json'})   
                 # print()
 
-                self.logs['TTSOutput'+str(uuid.uuid4())+'.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # self.logs['TTSOutput'+str(uuid.uuid4())+'.wav']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 self.audio_sender_queue.put(audio_array)
                 print('pushed audio array to audio_sender_queue')
@@ -203,7 +274,8 @@ class CallHandler:
             
             time.sleep(0.0001)
             if self.llm_queue and not self.llm_queue.empty():
-                
+                requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'llm_queue has new item','event_detail': ''}, headers={'accept': 'application/json'})   
+                    
                 text = self.llm_queue.get() # Get data from the queue
 
                 try:
@@ -212,6 +284,7 @@ class CallHandler:
                 except:
                     print('£'*100)
                     print("Could not get text embedding")
+                    requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'couldn\'t get text embedding','event_detail': ''}, headers={'accept': 'application/json'})   
 
                 # out_state = self.state+1 # Out state increase by 1
 
@@ -260,8 +333,9 @@ class CallHandler:
                     response = 'no'
 
                 print(response,self.state)
-                self.logs['LLMOutput '+str(uuid.uuid4())+':'+response]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+                # self.logs['LLMOutput: '+ response]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'LLMOutput','event_detail': response}, headers={'accept': 'application/json'})   
+                    
                 self.tts_queue.put(response)
 
     # def save_audio_to_file(audio_chunks, output_file):
@@ -292,6 +366,8 @@ class CallHandler:
                 if self.asr_queue:
                     if not self.asr_queue.empty():  # Check if the queue is empty
                         print('audiobytes added to asr queue')
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'asr_queue has new item','event_detail': ''}, headers={'accept': 'application/json'})   
+                    
 
                         audio_bytes = self.asr_queue.get() # Get data from the queue
                         # print(audio_bytes)
@@ -311,8 +387,9 @@ class CallHandler:
 
                         asr_output_text=response.json()
                         print(asr_output_text)
-
-                        self.logs['ASROutput: '+asr_output_text]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'ASROutput','event_detail': asr_output_text}, headers={'accept': 'application/json'})   
+                    
+                        # self.logs['ASROutput: '+asr_output_text]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                         self.llm_queue.put(asr_output_text)
 
@@ -351,12 +428,16 @@ class CallHandler:
 
                         c+=1
                         self.silence_found=True
-                        self.asr_queue.put(audio_bytes)
                         print("Silence Found")
-
+                        # self.logs['Silence Found:']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'Silence Found','event_detail': ''}, headers={'accept': 'application/json'})   
+                        self.asr_queue.put(audio_bytes)
                 else:
                     if self.vad_dictionary and list(self.vad_dictionary.values())[-1]==1:
                         print("Detected Voice")
+                        # self.logs['Detected Voice:']=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'detected voice','event_detail': ''}, headers={'accept': 'application/json'})   
+                    
                         self.silence_found=False
 
 
@@ -441,16 +522,21 @@ class CallHandler:
         # global audio_buffer
         try:
             call.answer()
+            requests.post(self.call_logs_url, params={'caller_id': self.caller_id,'event_type': 'Call Answered','event_detail': ''}, headers={'accept': 'application/json'})
+            call.write_audio(get_audio_bytes('/home/oem/webrtc/src/callbot/audios/global_ime_1.wav'))
             threading.Thread(target=self.read_buffer_chunks, daemon=True).start()
             threading.Thread(target=self.read_vad_dictionary, daemon=True).start()
             threading.Thread(target=self.asr, daemon=True).start()
             threading.Thread(target=self.llm, daemon=True).start()
             threading.Thread(target=self.tts, daemon=True).start()
             threading.Thread(target=self.send_audio_back, daemon=True, args=(call,)).start()
+            threading.Thread(target=self.call_hangup, daemon=True, args=(call,)).start()
 
             while call.state == CallState.ANSWERED:
                 audio_bytes = call.read_audio()
+                # print(audio_bytes)
                 self.audio_buffer.write(convert_8bit_to_16bit(audio_bytes))
+                
 
         except Exception as e:
             print(e)

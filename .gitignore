@@ -4,3 +4,5 @@ CustomMediaStreamTrack
 Python-3.8.6/
 myvenv/
 .vscode
+silero-vad/
+.venv

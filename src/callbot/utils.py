@@ -5,7 +5,7 @@ import numpy as np
 pcs = set() # Peer Connections
 clients={} # {client_id: Client() Object} dictionary
 
-def getAudioArray(path, sample_rate, channels):
+def getAudioArray(path, sample_rate, channels, to_sample_rate=48000):
     with wave.open(path, 'rb') as wav_file:
         num_frames = wav_file.getnframes()
         audio_data = wav_file.readframes(num_frames)
@@ -17,7 +17,7 @@ def getAudioArray(path, sample_rate, channels):
         return np_array
     elif channels==1:
         audio_tensor = torch.from_numpy(np_array)
-        audio_tensor = torchaudio.functional.resample(audio_tensor, sample_rate, 48000)
+        audio_tensor = torchaudio.functional.resample(audio_tensor, orig_freq=sample_rate, new_freq=to_sample_rate)
         # audio_tensor = torch.stack([audio_tensor, audio_tensor], dim=0)
         return audio_tensor.numpy()
 
@@ -33,6 +33,7 @@ state3_no_array=getAudioArray("./audios/global_ime_3_no.wav",sample_rate=24000, 
 state4_yes_array=getAudioArray("./audios/global_ime_4_yes.wav",sample_rate=24000, channels=1)
 state4_no_array=getAudioArray("./audios/global_ime_4_no.wav",sample_rate=24000, channels=1)
 state5_array=getAudioArray("./audios/global_ime_5_yes.wav",sample_rate=24000, channels=1)
+
 
 # # Welcome Audio that has to be played in the starting
 # with wave.open("./audios/welcome_shuvani.wav", 'rb') as wav_file:

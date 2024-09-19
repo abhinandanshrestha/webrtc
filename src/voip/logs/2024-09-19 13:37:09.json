@@ -1,0 +1,17 @@
+{
+    "Silence Found:": "2024-09-19 13:37:01",
+    "ASROutput:  Oh.": "2024-09-19 13:36:47",
+    "LLMOutput: yes": "2024-09-19 13:36:47",
+    "TTS Plays: isp2_yes.wav": "2024-09-19 13:36:47",
+    "TTSOutputb2e26fa6-c41c-44b6-9da8-c9ef65fe99af.wav": "2024-09-19 13:36:47",
+    "Detected Voice:": "2024-09-19 13:36:58",
+    "ASROutput:  I don't know": "2024-09-19 13:36:58",
+    "LLMOutput: no": "2024-09-19 13:37:01",
+    "TTS Plays: isp3_no.wav": "2024-09-19 13:36:58",
+    "TTSOutpute105e8d0-e03a-46d9-a3a3-fd6313f215d8.wav": "2024-09-19 13:36:58",
+    "Detected interruption": "2024-09-19 13:36:59",
+    "ASROutput:  You're not going to.": "2024-09-19 13:37:01",
+    "TTS Plays: isp4_no.wav": "2024-09-19 13:37:01",
+    "TTSOutput822b094b-185a-4590-b963-1da5b6701f18.wav": "2024-09-19 13:37:01",
+    "Hangup": "2024-09-19 13:37:09"
+}

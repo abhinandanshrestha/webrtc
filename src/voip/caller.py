@@ -3,6 +3,10 @@ import time
 from pyVoIP.VoIP import VoIPPhone, CallState
 from call_handler import CallHandler, convert_8bit_to_16bit, get_audio_bytes
 import threading
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-c', '--call', type=str, help='Number to call', required=True)
 
 phone = VoIPPhone(
         server="192.168.88.5",
@@ -14,11 +18,12 @@ phone = VoIPPhone(
 
 phone.start()
 callHandler=CallHandler()
-
+callHandler.caller=True
 start_thread=False
 
 try:
-    call = phone.call('5000')
+    args = parser.parse_args()
+    call = phone.call(args.call)
     print("Call initiated. Send mode:", call.sendmode)
     # while True:
     #     print(call.state)
@@ -42,6 +47,7 @@ try:
                 threading.Thread(target=callHandler.llm, daemon=True).start()
                 threading.Thread(target=callHandler.tts, daemon=True).start()
                 threading.Thread(target=callHandler.send_audio_back, daemon=True, args=(call,)).start()
+                threading.Thread(target=callHandler.call_hangup, daemon=True, args=(call,)).start()
                 start_thread=True
 
         else:
@@ -53,3 +59,4 @@ try:
 
 except Exception as e:
     print("An error occurred:", e)
+

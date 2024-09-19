@@ -57,25 +57,30 @@ def generate_response_embeddings():
             
         return positive_embeds, negative_embeds, repeat_embeds
 
+
+def top5avg(similarity_list):
+    sorted_numbers = sorted(similarity_list, reverse=True)
+    top_5 = sorted_numbers[:5]
+    return sum(top_5) / len(top_5)
+
 def find_similarity(input_embedding, positive_embeddings, negative_embeddings, repeat_embeddings, threshold=0.5):
 
     # Calculate cosine similarity between input string and responses
 
-
-    positive_similarity_scores = [cosine_similarity(input_embedding, embedding) for embedding in positive_embeddings]
-    negative_similarity_scores = [cosine_similarity(input_embedding, embedding) for embedding in negative_embeddings]
-    repeat_similarity_scores = [cosine_similarity(input_embedding, embedding) for embedding in repeat_embeddings]
+    positive_similarity_scores = [cosine_similarity(input_embedding, embedding)[0][0] for embedding in positive_embeddings]
+    negative_similarity_scores = [cosine_similarity(input_embedding, embedding)[0][0] for embedding in negative_embeddings]
+    repeat_similarity_scores = [cosine_similarity(input_embedding, embedding)[0][0] for embedding in repeat_embeddings]
     
-    print(positive_similarity_scores, negative_similarity_scores)
-    # Find maximum similarity score for each category
-    max_positive_similarity = max(positive_similarity_scores)
-    max_negative_similarity = max(negative_similarity_scores)
-    max_repeat_similarity = max(repeat_similarity_scores)
+    top5avg_positive_similarity = top5avg(positive_similarity_scores)
+    top5avg_negative_similarity = top5avg(negative_similarity_scores)
+    top5avg_repeat_similarity = top5avg(repeat_similarity_scores)
+
+    print(f"top5avg_positive_similarity:{top5avg_positive_similarity}, top5avg_negative_similarity:{top5avg_negative_similarity}, top5avg_repeat_similarity:{top5avg_repeat_similarity}")
 
     # Check which category has higher similarity
-    if (max_positive_similarity >= max_negative_similarity) and (max_positive_similarity >= max_repeat_similarity):
+    if (top5avg_positive_similarity >= top5avg_negative_similarity) and (top5avg_positive_similarity >= top5avg_repeat_similarity):
         return 0
-    elif (max_repeat_similarity >= max_positive_similarity) and (max_repeat_similarity >= max_negative_similarity):
+    elif (top5avg_repeat_similarity >= top5avg_positive_similarity) and (top5avg_repeat_similarity >= top5avg_negative_similarity):
         return 1
     else:
         return 2
